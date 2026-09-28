@@ -1,0 +1,72 @@
+[
+  {
+    "event_id": "65e2cbfc-5c5c-46e1-9190-df183bafe2a1",
+    "component": "reader",
+    "status": "disconnected",
+    "reason": "Koneksi TCP reader tertutup",
+    "observed_at": "2026-09-15T13:04:42.993Z"
+  },
+  {
+    "event_id": "27096608-eaa4-47ab-9d62-21231d7ece77",
+    "component": "reader",
+    "status": "disconnected",
+    "reason": "connect ECONNREFUSED 192.168.1.200:2022",
+    "observed_at": "2026-09-15T13:04:43.008Z"
+  },
+  {
+    "event_id": "1b16b39d-ddab-4fd7-906a-e32e3afe102a",
+    "component": "reader",
+    "status": "disconnected",
+    "reason": "connect ECONNREFUSED 192.168.1.200:2022",
+    "observed_at": "2026-09-15T13:04:42.992Z"
+  },
+  {
+    "event_id": "58928179-4c3a-491b-959e-87dc94af6810",
+    "component": "reader",
+    "status": "disconnected",
+    "reason": "Koneksi TCP reader tertutup",
+    "observed_at": "2026-09-15T13:04:43.009Z"
+  },
+  {
+    "event_id": "40473824-ac1c-463b-a14c-49c3ba881891",
+    "component": "reader",
+    "status": "unresponsive",
+    "reason": "Tidak ada respons protokol selama 15000 ms",
+    "observed_at": "2026-09-15T13:04:44.025Z"
+  },
+  {
+    "event_id": "a618fad7-a682-44ba-bbe8-de710fea403c",
+    "component": "reader",
+    "status": "unpaired",
+    "reason": "No paired RFID reader device found in backend",
+    "observed_at": "2026-09-15T13:04:44.952Z"
+  },
+  {
+    "event_id": "8601bb58-e6b1-4840-9d2c-56de44e5c34d",
+    "component": "reader",
+    "status": "unresponsive",
+    "reason": "Tidak ada respons protokol selama 15000 ms",
+    "observed_at": "2026-09-15T13:04:47.183Z"
+  },
+  {
+    "event_id": "b1479139-a9ec-4681-9ac0-ac793eda05ee",
+    "component": "reader",
+    "status": "unpaired",
+    "reason": "No paired RFID reader device found in backend",
+    "observed_at": "2026-09-15T13:04:52.493Z"
+  },
+  {
+    "event_id": "8e7b1f8f-66d0-4322-a538-f7277e7112c4",
+    "component": "reader",
+    "status": "unresponsive",
+    "reason": "Tidak ada respons protokol selama 15000 ms",
+    "observed_at": "2026-09-15T13:04:55.982Z"
+  },
+  {
+    "event_id": "b9f097ec-e0f4-4f31-9973-b55f0f658f4b",
+    "component": "reader",
+    "status": "unpaired",
+    "reason": "No paired RFID reader device found in backend",
+    "observed_at": "2026-09-15T13:05:11.685Z"
+  }
+]

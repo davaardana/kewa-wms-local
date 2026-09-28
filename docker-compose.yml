@@ -1,0 +1,159 @@
+services:
+  # 1. Nginx Reverse Proxy (Frontend SPA + Backend API Routing)
+  nginx:
+    image: nginx:alpine
+    container_name: mosa-nginx
+    restart: unless-stopped
+    ports:
+      - "${HTTP_BIND:-0.0.0.0}:${HTTP_PORT:-80}:80"
+    volumes:
+      - ./docker/nginx/default.conf:/etc/nginx/conf.d/default.conf
+      - ./frontend/dist:/var/www/frontend/dist
+      - ./backend:/var/www/backend
+    depends_on:
+      backend:
+        condition: service_healthy
+      frontend:
+        condition: service_started
+    networks:
+      - mosa-network
+
+  # 2. Frontend React Vite Builder & Static Asset Provider
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: mosa-frontend
+    restart: unless-stopped
+    volumes:
+      - ./frontend/dist:/var/www/frontend/dist
+    networks:
+      - mosa-network
+
+  # 3. Backend Laravel PHP-FPM Multi-Worker
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: mosa-backend
+    restart: unless-stopped
+    environment:
+      APP_ENV: production
+      APP_DEBUG: "false"
+      APP_KEY: ${APP_KEY:-base64:4Q2kjvfqIWRa7Nn4Ax8aC38lg2oJhmrDmViBvLkMd1I=}
+      DB_CONNECTION: pgsql
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_DATABASE: mosa_wms
+      DB_USERNAME: mosa_user
+      DB_PASSWORD: ${DB_PASSWORD:-default123}
+      WS_CONTROL_SECRET: ${WS_CONTROL_SECRET:-}
+      WS_CONTROL_PILOT_URL: ${WS_CONTROL_PILOT_URL:-}
+      WS_CONTROL_PILOT_WAREHOUSE_ID: ${WS_CONTROL_PILOT_WAREHOUSE_ID:-}
+      ALLOW_HYBRID_DEVICE: ${ALLOW_HYBRID_DEVICE:-false}
+    volumes:
+      - ./backend:/var/www/backend
+      - ./docker/php/www.conf:/usr/local/etc/php-fpm.d/www.conf:ro
+      - ./docker/php/uploads.ini:/usr/local/etc/php/conf.d/uploads.ini:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: sh -c "test -f vendor/autoload.php || composer install --no-dev --no-interaction --prefer-dist --optimize-autoloader --no-progress; php artisan migrate --force && php artisan db:seed --force && exec php-fpm"
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 9000"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    networks:
+      - mosa-network
+
+  # 4. PostgreSQL 16 Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: mosa-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: mosa_wms
+      POSTGRES_USER: mosa_user
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-default123}
+    ports:
+      - "${POSTGRES_BIND:-127.0.0.1}:${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mosa_user -d mosa_wms"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    networks:
+      - mosa-network
+
+  # Optional local DB administration. Start explicitly: docker compose up -d adminer
+  adminer:
+    image: adminer:5-standalone
+    container_name: mosa-adminer
+    restart: unless-stopped
+    profiles: [adminer]
+    ports:
+      - "${ADMINER_BIND:-127.0.0.1}:${ADMINER_PORT:-8081}:8080"
+    environment:
+      ADMINER_DEFAULT_SERVER: postgres
+    depends_on:
+      - postgres
+    networks:
+      - mosa-network
+
+  # 5. IoT RFID Gate Bridge Daemon
+  edge-bridge:
+    build:
+      context: ./edge-bridge
+      dockerfile: Dockerfile
+    container_name: mosa-edge-bridge
+    restart: unless-stopped
+    ports:
+      - "${EDGE_BIND:-0.0.0.0}:2077:2077"
+      - "${EDGE_BIND:-0.0.0.0}:2078:2078"
+      - "${EDGE_BIND:-0.0.0.0}:2079:2079"
+    environment:
+      - WAREHOUSE_ID=1
+      - GATE_ID=GATE-01
+      - API_BASE_URL=http://nginx/api
+      - DEVICE_API_TOKEN=${DEVICE_API_TOKEN:-}
+      - TCP_PORT=2077
+      - TCP_PORT_B=2079
+      - WS_PORT=2078
+      - WS_ALLOWED_ORIGINS=${WS_ALLOWED_ORIGINS:-http://localhost,http://127.0.0.1}
+      - WS_CONTROL_SECRET=${WS_CONTROL_SECRET:-}
+      - WS_DEVICE_CODE=${WS_DEVICE_CODE:-}
+      - READER_HOST=192.168.1.200
+      - READER_PORT=2022
+      - HEARTBEAT_INTERVAL_MS=10000
+      - READER_RESPONSE_TIMEOUT_MS=5000
+    depends_on:
+      - nginx
+    networks:
+      - mosa-network
+
+  # 6. Cloudflare Zero Trust Secure Tunnel (Expose Local PC to Custom Domain without Public IP)
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: mosa-cloudflared
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN:-}
+    depends_on:
+      - nginx
+    networks:
+      - mosa-network
+    profiles:
+      - tunnel
+      - full
+
+volumes:
+  postgres_data:
+    driver: local
+
+networks:
+  mosa-network:
+    driver: bridge

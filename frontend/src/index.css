@@ -1,0 +1,62 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html, body {
+    @apply font-sans bg-slate-50 text-slate-800;
+    width: 100%;
+    max-width: 100vw;
+    overflow-x: hidden;
+    -webkit-tap-highlight-color: transparent;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  #root {
+    width: 100%;
+    max-width: 100vw;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* Prevent mobile browsers (iOS Safari & Android Chrome) from auto-zooming on input focus */
+  @media screen and (max-width: 768px) {
+    input, select, textarea {
+      font-size: 16px !important;
+    }
+  }
+
+  /* Enable smooth horizontal touch-scrolling inside all scrollable containers */
+  .overflow-x-auto, [class*="overflow-x-auto"] {
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-x: contain;
+  }
+}
+
+/* Safe area insets for notches & home bars */
+.pt-safe {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+.badge {
+  @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium;
+}
+
+.badge-success {
+  @apply bg-emerald-100 text-emerald-800 border border-emerald-200;
+}
+
+.badge-warning {
+  @apply bg-amber-100 text-amber-800 border border-amber-200;
+}
+
+.badge-danger {
+  @apply bg-rose-100 text-rose-800 border border-rose-200;
+}
+
+.badge-info {
+  @apply bg-blue-100 text-blue-800 border border-blue-200;
+}

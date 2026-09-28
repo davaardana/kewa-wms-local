@@ -1,0 +1,19 @@
+[Unit]
+Description=MOSA WMS IoT RFID Gate Bridge Service (Universal Reader Mode)
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/mosa/edge-bridge
+ExecStart=/usr/bin/node /opt/mosa/edge-bridge/src/index.js
+Restart=always
+RestartSec=5s
+StandardOutput=journal
+StandardError=journal
+Environment=NODE_ENV=production
+Environment=PORT=2077
+Environment=WS_PORT=2078
+
+[Install]
+WantedBy=multi-user.target

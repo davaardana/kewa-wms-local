@@ -1,0 +1,19 @@
+[Unit]
+Description=MOSA WMS IoT Gate Bridge Service (HW-VX6346KL)
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/mosa/edge-bridge
+ExecStart=/usr/bin/node /opt/mosa/edge-bridge/src/index.js
+Restart=always
+RestartSec=5s
+Environment=NODE_ENV=production
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mosa-gate-bridge
+
+[Install]
+WantedBy=multi-user.target

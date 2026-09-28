@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  mosa-gate-bridge:
+    build: .
+    container_name: mosa-gate-bridge
+    restart: always
+    ports:
+      - "2077:2077"
+      - "2078:2078"
+      - "2079:2079"
+    environment:
+      - WAREHOUSE_ID=1
+      - GATE_ID=GATE-01
+      - API_BASE_URL=http://host.docker.internal:8000/api
+      - TCP_PORT=2077
+      - TCP_PORT_B=2079
+      - WS_PORT=2078
+      - WS_ALLOWED_ORIGINS=${WS_ALLOWED_ORIGINS:-http://localhost,http://127.0.0.1}
+      - WS_CONTROL_SECRET=${WS_CONTROL_SECRET:-}
+      - WS_DEVICE_CODE=${WS_DEVICE_CODE:-}
+      - RSSI_THRESHOLD=-75
+      - DEVICE_MODEL=ELECTRON_HW-VX6346KL
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

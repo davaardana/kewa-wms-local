@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192" width="192" height="192">
+  <defs>
+    <linearGradient id="mosaGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#10b981"/>
+      <stop offset="100%" stop-color="#047857"/>
+    </linearGradient>
+  </defs>
+  <rect width="192" height="192" rx="40" fill="#090d16"/>
+  <rect x="16" y="16" width="160" height="160" rx="32" fill="url(#mosaGrad)" opacity="0.15"/>
+  <circle cx="96" cy="96" r="54" fill="none" stroke="#10b981" stroke-width="6" opacity="0.3"/>
+  <circle cx="96" cy="96" r="36" fill="none" stroke="#34d399" stroke-width="8" opacity="0.6"/>
+  <circle cx="96" cy="96" r="16" fill="#10b981"/>
+  <path d="M60 48 Q96 16 132 48" fill="none" stroke="#10b981" stroke-width="8" stroke-linecap="round"/>
+  <path d="M60 144 Q96 176 132 144" fill="none" stroke="#10b981" stroke-width="8" stroke-linecap="round"/>
+</svg>

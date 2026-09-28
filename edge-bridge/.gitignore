@@ -1,0 +1,5 @@
+node_modules
+*.log
+offline_buffer.json
+snapshots/*
+!snapshots/.gitkeep

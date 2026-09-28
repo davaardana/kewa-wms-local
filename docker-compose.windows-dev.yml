@@ -1,0 +1,19 @@
+# Windows development + Cloudflare Tunnel
+# Run: docker compose -f docker-compose.yml -f docker-compose.windows-dev.yml --profile tunnel up -d --build
+services:
+  backend:
+    environment:
+      ALLOW_HYBRID_DEVICE: "true"
+  nginx:
+    ports:
+      - "127.0.0.1:80:80"
+  mysql:
+    ports:
+      - "127.0.0.1:3306:3306"
+  edge-bridge:
+    ports:
+      - "127.0.0.1:2077:2077"
+      - "127.0.0.1:2078:2078"
+      - "127.0.0.1:2079:2079"
+  cloudflared:
+    profiles: [tunnel]

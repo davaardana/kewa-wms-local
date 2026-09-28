@@ -1,0 +1,5 @@
+# Windows development: MOSA core in Docker, Edge Bridge runs natively on Windows.
+# Run: docker compose -f docker-compose.yml -f docker-compose.windows-dev.yml -f docker-compose.windows-dev-no-edge.yml --profile tunnel up -d --build
+services:
+  edge-bridge:
+    profiles: [native-edge]

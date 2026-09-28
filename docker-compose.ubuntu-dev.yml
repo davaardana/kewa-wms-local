@@ -1,0 +1,17 @@
+# Ubuntu development + Cloudflare Tunnel
+# docker compose --env-file .env.ubuntu-dev -f docker-compose.yml -f docker-compose.ubuntu-dev.yml --profile tunnel up -d --build
+services:
+  backend:
+    environment:
+      ALLOW_HYBRID_DEVICE: "true"
+  nginx:
+    ports:
+      - "127.0.0.1:8080:80"
+  mysql:
+    ports:
+      - "127.0.0.1:3306:3306"
+  edge-bridge:
+    profiles: [edge]
+    ports: []
+  cloudflared:
+    profiles: [tunnel]
