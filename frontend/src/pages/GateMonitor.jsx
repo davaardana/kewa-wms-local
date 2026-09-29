@@ -148,7 +148,14 @@ export default function GateMonitor({ onNavigate = null, currentUser = null }) {
   }, [selectedWarehouse, playSiren]);
 
   useEffect(() => {
-    masterApi.getWarehouses().then((res) => setWarehouses(res.data));
+    masterApi.getWarehouses().then((res) => {
+      const whList = res.data || [];
+      setWarehouses(whList);
+      // Auto-select first warehouse so WebSocket connects immediately
+      if (whList.length > 0 && selectedWarehouse === 'ALL') {
+        setSelectedWarehouse(String(whList[0].id));
+      }
+    });
   }, []);
 
   const [bridgeMode, setBridgeMode] = useState('GATE_SECURITY');
@@ -194,7 +201,7 @@ export default function GateMonitor({ onNavigate = null, currentUser = null }) {
       if (isDisposed || !warehouseId) return startPollingFallback();
       try {
         setStreamMode((prev) => (prev === 'POLLING_FALLBACK' ? prev : 'CONNECTING'));
-        const socket = await openAuthenticatedEdgeSocket(warehouseId, ['GET_MODE', 'SET_MODE:GATE_SECURITY', 'SET_MODE:ENROLLMENT'], {
+        const socket = await openAuthenticatedEdgeSocket(warehouseId, ['GET_MODE', 'SET_MODE:GATE_SECURITY'], {
           onAuthenticated: (authenticatedSocket) => {
             if (isDisposed) return authenticatedSocket.close();
             setStreamMode('WEBSOCKET');

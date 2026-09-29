@@ -14,12 +14,17 @@ class EdgeWsUrl implements ValidationRule
             return false;
         }
         $parts = parse_url($value);
+        $scheme = $parts['scheme'] ?? '';
+        // Allow both wss:// (production) and ws:// (local dev via nginx proxy)
+        if (!in_array($scheme, ['wss', 'ws'], true)) {
+            return false;
+        }
+        $validatePrefix = $scheme === 'wss' ? 'https://' . substr($value, 6) : 'http://' . substr($value, 5);
         return $parts !== false
-            && ($parts['scheme'] ?? '') === 'wss'
             && !array_key_exists('user', $parts)
             && !array_key_exists('pass', $parts)
             && isset($parts['host'])
-            && filter_var('https://'.substr($value, 6), FILTER_VALIDATE_URL) !== false
+            && filter_var($validatePrefix, FILTER_VALIDATE_URL) !== false
             && (!isset($parts['port']) || $parts['port'] >= 1);
     }
 

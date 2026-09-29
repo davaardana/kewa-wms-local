@@ -4,7 +4,8 @@ export async function openAuthenticatedEdgeSocket(warehouseId, commands, handler
   if (!warehouseId) throw new Error('Warehouse is required for Edge WebSocket');
   const { data } = await wsControlApi.issueTicket(warehouseId, commands, deviceId, purpose);
   const endpoint = new URL(data.edge_ws_url);
-  if (endpoint.protocol !== 'wss:' || endpoint.username || endpoint.password || endpoint.hash || endpoint.search
+  const isValidProtocol = endpoint.protocol === 'wss:' || endpoint.protocol === 'ws:';
+  if (!isValidProtocol || endpoint.username || endpoint.password || endpoint.hash || endpoint.search
       || /[\s\\%?#]/.test(data.edge_ws_url)
       || data.warehouse_id !== Number(warehouseId) || (deviceId && data.device_id !== Number(deviceId))) {
     throw new Error('Invalid server-selected Edge endpoint');

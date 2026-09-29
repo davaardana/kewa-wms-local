@@ -136,6 +136,18 @@ export default function DevicePairing({ currentUser = null }) {
     });
   };
 
+  // Auto-select first active device when devices are loaded
+  const hasAutoSelected = useRef(false);
+  useEffect(() => {
+    if (!hasAutoSelected.current && devices.length > 0 && !selectedDeviceId) {
+      const firstActive = devices.find((d) => d.is_active);
+      if (firstActive) {
+        setSelectedDeviceId(String(firstActive.id));
+        hasAutoSelected.current = true;
+      }
+    }
+  }, [devices, selectedDeviceId]);
+
   useEffect(() => {
     fetchData();
     const interval = setInterval(() => fetchData(false), 5000);
@@ -156,7 +168,7 @@ export default function DevicePairing({ currentUser = null }) {
     const connect = async () => {
       if (isUnmounted) return;
       try {
-        ws = await openAuthenticatedEdgeSocket(warehouseId, ['GET_MODE', 'SET_MODE:GATE_SECURITY', 'SET_MODE:ENROLLMENT'], {
+        ws = await openAuthenticatedEdgeSocket(warehouseId, ['GET_MODE', 'SET_MODE:GATE_SECURITY'], {
           onAuthenticated: (socket) => {
             if (isUnmounted) return socket.close();
             setWsConnected(true);
