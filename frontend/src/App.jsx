@@ -215,7 +215,7 @@ export default function App() {
 
   // Login form state
   const [email, setEmail] = useState('pm.budi@mosa.id');
-  const [password, setPassword] = useState('password123');
+  const [password, setPassword] = useState('password');
   const [loginLoading, setLoginLoading] = useState(false);
   const [previewRole, setPreviewRole] = useState('ALL');
   const [roleFilter, setRoleFilter] = useState('all');
