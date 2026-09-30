@@ -296,12 +296,13 @@ export default function App() {
     }
   }, [currentUser?.role, previewRole]);
 
-  const handleLogin = async (e, directEmail = null) => {
+  const handleLogin = async (e, directEmail = null, directPassword = null) => {
     if (e) e.preventDefault();
     setLoginLoading(true);
     const loginEmail = directEmail || email;
+    const loginPassword = directPassword || password;
     try {
-      const res = await authApi.login(loginEmail, password);
+      const res = await authApi.login(loginEmail, loginPassword);
       localStorage.setItem('mosa_token', res.data.token);
       localStorage.setItem('mosa_user', JSON.stringify(res.data.user));
       setCurrentUser(res.data.user);
@@ -341,8 +342,8 @@ export default function App() {
 
   const quickSwitchUser = (userEmail) => {
     setEmail(userEmail);
-    setPassword('password123');
-    handleLogin(null, userEmail);
+    setPassword('password');
+    handleLogin(null, userEmail, 'password');
   };
 
   if (!currentUser) {
