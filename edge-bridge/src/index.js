@@ -372,8 +372,30 @@ class GateBridgeApp {
 
     // Keepalive to quickly detect sudden power-loss / disconnection
     socket.setKeepAlive(true, 2000);
-    socket.setTimeout(this.readerResponseTimeoutMs);
+    // NOTE: socket.setTimeout is NOT set here — see timeout logic in 'data' handler below.
+    // Using a manual idle timer instead: send keep-alive command, only destroy on double-timeout.
     this._setReaderStatus('connecting');
+    let _idleTimeoutCount = 0; // track consecutive idle intervals
+    const IDLE_INTERVAL_MS = 15000; // 15s idle before sending keep-alive ping
+    let _idleTimer = null;
+    const _startIdleTimer = () => {
+      if (_idleTimer) clearTimeout(_idleTimer);
+      _idleTimer = setTimeout(function _onIdle() {
+        if (!socket || socket.destroyed) return;
+        _idleTimeoutCount++;
+        if (_idleTimeoutCount >= 2) {
+          // 2nd consecutive idle (30s total with no data) — reader is truly dead
+          console.warn(`⚠️ [DIRECT READER] No response for ${_idleTimeoutCount * IDLE_INTERVAL_MS / 1000}s — forcing reconnect.`);
+          socket.destroy();
+          return;
+        }
+        // 1st idle: send keep-alive inventory command to wake reader
+        console.log('⏱️ [DIRECT READER IDLE] No tags for 15s — sending keep-alive inventory command...');
+        sendInventoryCmd();
+        _idleTimer = setTimeout(_onIdle, IDLE_INTERVAL_MS);
+      }, IDLE_INTERVAL_MS);
+    };
+    _startIdleTimer();
 
     const sendInitCmd = () => {
       if (this.directReaderSocket && !this.directReaderSocket.destroyed && this.directReaderSocket.writable) {
@@ -422,6 +444,8 @@ class GateBridgeApp {
         this.readerLastResponseAt = new Date().toISOString();
         this.lastTagSeenAt = Date.now();
         this.directReaderRetryCount = 0;
+        _idleTimeoutCount = 0; // reset idle counter on any valid data
+        _startIdleTimer();    // restart idle timer
         this._setReaderStatus('responsive');
       }
 
@@ -445,21 +469,22 @@ class GateBridgeApp {
     });
 
     socket.on('error', (err) => {
-      this.isConnecting = false; // Release reconnect lock on error (#9)
+      this.isConnecting = false;
+      if (_idleTimer) { clearTimeout(_idleTimer); _idleTimer = null; }
       this._setReaderStatus('disconnected', err.message);
       console.warn(`⚠️ [DIRECT READER WARN] ${this.readerHost}:${this.readerPort} - ${err.message}`);
       socket.destroy();
     });
 
-    socket.on('timeout', () => {
-      this._setReaderStatus('unresponsive', `Tidak ada respons protokol selama ${this.readerResponseTimeoutMs} ms`);
-      socket.destroy();
-    });
+    // socket.on('timeout') removed — replaced by manual _idleTimer above
+    // Old behavior destroyed socket on any 5s idle (even when reader has no tags nearby)
+    // New behavior: send keep-alive at 15s, only force-disconnect at 30s of true silence
 
     socket.on('close', () => {
+      if (_idleTimer) { clearTimeout(_idleTimer); _idleTimer = null; }
       console.log(`🔌 [DIRECT READER DISCONNECTED] Connection to ${this.readerHost}:${this.readerPort} closed.`);
       this.directReaderSocket = null;
-      this.isConnecting = false; // Release reconnect lock (#9)
+      this.isConnecting = false;
       if (this.readerStatus !== 'unresponsive') this._setReaderStatus('disconnected', 'Koneksi TCP reader tertutup');
       if (this.directReaderInitTimer) {
         clearTimeout(this.directReaderInitTimer);
