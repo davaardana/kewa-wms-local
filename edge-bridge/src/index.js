@@ -84,6 +84,10 @@ class GateBridgeApp {
     this.readerError = null;
     this.isDeviceUnpaired = null;
     this.operationalMode = 'GATE_SECURITY'; // 'GATE_SECURITY' | 'ENROLLMENT'
+    this.wsAuthFailureMap = new Map();      // ip -> {count, resetAt} — WS rate limiting (#4)
+    this.lastTagBroadcastAt = new Map();   // epc -> timestamp — broadcast dedup (#6)
+    this.isConnecting = false;             // prevent double-reconnect race (#9)
+    this.logLevel = (process.env.LOG_LEVEL || 'info').toLowerCase(); // 'debug'|'info' (#10)
 
     // Start WebSocket broadcaster
     this.startWebSocketServer();
@@ -101,6 +105,9 @@ class GateBridgeApp {
     // Watchdog check for socket health & RF loop refresh (Every 15s)
     this.watchdogTimer = setInterval(() => this._runWatchdogCheck(), 1000);
   }
+
+  /** High-volume per-scan log — only printed when LOG_LEVEL=debug (#10) */
+  _debug(msg) { if (this.logLevel === 'debug') console.log(msg); }
 
   _setReaderStatus(status, reason = null) {
     if (status === this.readerStatus && reason === this.readerError) return;
@@ -165,6 +172,18 @@ class GateBridgeApp {
 
       this.wss.on('connection', (ws, req) => {
         const clientIp = req.socket.remoteAddress;
+
+        // Rate limiting: block IPs with > 10 failed auth attempts within 60s (#4)
+        if (this.wsAuthFailureMap) {
+          const _nowRl = Date.now();
+          const _ipRec = this.wsAuthFailureMap.get(clientIp) || { count: 0, resetAt: _nowRl + 60000 };
+          if (_nowRl > _ipRec.resetAt) { _ipRec.count = 0; _ipRec.resetAt = _nowRl + 60000; }
+          if (_ipRec.count >= 10) {
+            ws.close(4029, 'Rate limited: too many failed auth attempts');
+            return;
+          }
+        }
+
         const authTimer = setTimeout(() => ws.close(4001, 'Authentication required'), 5000);
 
         ws.on('message', (msg) => {
@@ -210,7 +229,13 @@ class GateBridgeApp {
             }
           } catch (e) {
             ws.send(JSON.stringify({ type: 'ERROR', code: ws.auth ? 'FORBIDDEN' : 'AUTH_FAILED' }));
-            if (!ws.auth) ws.close(4001, 'Authentication failed');
+            if (!ws.auth) {
+              // Track auth failures for rate limiting (#4)
+              const rec = this.wsAuthFailureMap.get(clientIp) || { count: 0, resetAt: Date.now() + 60000 };
+              rec.count += 1;
+              this.wsAuthFailureMap.set(clientIp, rec);
+              ws.close(4001, 'Authentication failed');
+            }
           }
         });
 
@@ -260,6 +285,8 @@ class GateBridgeApp {
    */
   async connectDirectReader() {
     if (!this.enableDirectReader) return;
+    if (this.isConnecting) return; // Prevent double-connect race condition (#9)
+    this.isConnecting = true;
 
     if (this.directReaderSocket) {
       try { this.directReaderSocket.destroy(); } catch (e) {}
@@ -343,22 +370,21 @@ class GateBridgeApp {
     };
 
     socket.connect(this.readerPort, this.readerHost, () => {
+      this.isConnecting = false; // Connection established, release lock (#9)
       this.lastTagSeenAt = Date.now();
       console.log(`✅ [DIRECT READER CONNECTED] Successfully connected to EL-UHF-RC4 Reader at ${this.readerHost}:${this.readerPort}!`);
-      
+
       // Step 1: Send MODULE_INIT (0x0050) to boot/wake RF baseband module after power loss / cold boot
       console.log(`⚡ [DIRECT READER INIT] Sending MODULE_INIT (CFFF0050000726) to wake up UHF RF Module...`);
       sendInitCmd();
 
-      // Step 2: Allow 200ms for RF synthesis PLL lock, then launch continuous inventory
+      // Step 2: 200ms for RF PLL lock, then start continuous inventory.
+      // Reader auto-sends rounds; we resend only on 0x12 (cycle-complete) — no 500ms poll needed (#3)
       if (this.directReaderInitTimer) clearTimeout(this.directReaderInitTimer);
       this.directReaderInitTimer = setTimeout(() => {
         sendInventoryCmd();
-        console.log(`🚀 [DIRECT READER INIT] Start Inventory loop active (CFFF0001050000000000F5B5).`);
+        this._debug(`🚀 [DIRECT READER INIT] Start Inventory loop active (CFFF0001050000000000F5B5).`);
       }, 200);
-
-      // Continuous poll every 500ms to maintain active reading loop
-      this.inventoryPollTimer = setInterval(sendInventoryCmd, 500);
     });
 
     socket.on('data', (chunk) => {
@@ -382,7 +408,7 @@ class GateBridgeApp {
           if (!frame.epc) continue;
 
           let antenna = this.assignedAntenna || (frame.antenna === 2 ? 'B' : 'A');
-          console.log(`🎯 [TAG DETECTED] EPC: ${frame.epc} | RSSI: ${frame.rssi}dBm | Antena: ${antenna} | Proto: ${frame.protocol}`);
+          this._debug(`🎯 [TAG DETECTED] EPC: ${frame.epc} | RSSI: ${frame.rssi}dBm | Antena: ${antenna} | Proto: ${frame.protocol}`);
           this.onTagDetected(frame.epc, antenna, frame.rssi);
         }
       }
@@ -393,6 +419,7 @@ class GateBridgeApp {
     });
 
     socket.on('error', (err) => {
+      this.isConnecting = false; // Release reconnect lock on error (#9)
       this._setReaderStatus('disconnected', err.message);
       console.warn(`⚠️ [DIRECT READER WARN] ${this.readerHost}:${this.readerPort} - ${err.message}`);
       socket.destroy();
@@ -406,6 +433,7 @@ class GateBridgeApp {
     socket.on('close', () => {
       console.log(`🔌 [DIRECT READER DISCONNECTED] Connection to ${this.readerHost}:${this.readerPort} closed.`);
       this.directReaderSocket = null;
+      this.isConnecting = false; // Release reconnect lock (#9)
       if (this.readerStatus !== 'unresponsive') this._setReaderStatus('disconnected', 'Koneksi TCP reader tertutup');
       if (this.directReaderInitTimer) {
         clearTimeout(this.directReaderInitTimer);
@@ -528,17 +556,21 @@ class GateBridgeApp {
       return;
     }
 
-    // 1. Broadcast raw tag read to authenticated UI clients (Monitor, Pairing, Enrollment, Handheld)
-    this.broadcast({
-      type: 'TAG_READ',
-      epc,
-      antenna,
-      rssi,
-      gate_id: this.gateId,
-      warehouse_id: this.warehouseId,
-      operational_mode: this.operationalMode,
-      timestamp: new Date().toISOString(),
-    });
+    // 1. Broadcast raw tag read — dedup per EPC per 1s to avoid flooding WS clients (#6)
+    const _nowDedup = Date.now();
+    if (_nowDedup - (this.lastTagBroadcastAt.get(epc) || 0) >= 1000) {
+      this.lastTagBroadcastAt.set(epc, _nowDedup);
+      this.broadcast({
+        type: 'TAG_READ',
+        epc,
+        antenna,
+        rssi,
+        gate_id: this.gateId,
+        warehouse_id: this.warehouseId,
+        operational_mode: this.operationalMode,
+        timestamp: new Date().toISOString(),
+      });
+    }
 
     // 2. Evaluate movement direction through DirectionEngine
     const result = this.directionEngine.processTagRead(epc, antenna, rssi);
@@ -597,9 +629,7 @@ class GateBridgeApp {
     this.batchCollector.direction = null;
     this.batchCollector.timer = null;
     if (this.batchCollector.deadlineTimer) clearTimeout(this.batchCollector.deadlineTimer);
-    clearInterval(this.flushTimer);
-    clearInterval(this.heartbeatTimer);
-    clearInterval(this.watchdogTimer);
+    // NOTE: flushTimer/heartbeatTimer/watchdogTimer are long-running global timers — do NOT clear here (#1)
     this.batchCollector.deadlineTimer = null;
     this.batchCollector.eventId = null;
     this.batchCollector.observedAt = null;
@@ -689,6 +719,8 @@ class GateBridgeApp {
     }
     if (this.batchCollector.timer) clearTimeout(this.batchCollector.timer);
     if (this.batchCollector.deadlineTimer) clearTimeout(this.batchCollector.deadlineTimer);
+    // Flush any pending debounced disk writes before exit (#7)
+    if (this.cache && typeof this.cache.flushPending === 'function') this.cache.flushPending();
   }
 }
 

@@ -11,6 +11,8 @@ class ApiClient {
     this.deviceToken = deviceToken;
     this.flushPromise = null;
     this.incidentFlushPromise = null;
+    this._configCache = null;           // cached /devices/config response (#8)
+    this._configCacheExpiresAt = 0;    // TTL timestamp for cache (#8)
   }
 
   mutationConfig(timeout) {
@@ -131,13 +133,28 @@ class ApiClient {
   }
 
   /**
+   * Shared cached fetcher for /devices/config (TTL: 30s).
+   * Both fetchPairedDevices and fetchGateConfig use this to avoid double API hits (#8).
+   */
+  async _fetchConfigCached() {
+    const now = Date.now();
+    if (this._configCache && now < this._configCacheExpiresAt) {
+      return this._configCache;
+    }
+    const response = await axios.get(`${this.baseUrl}/devices/config`, this.mutationConfig(3000));
+    this._configCache = response.data;
+    this._configCacheExpiresAt = now + 30000; // 30s TTL
+    return this._configCache;
+  }
+
+  /**
    * Fetch registered devices configuration from Central API.
    */
   async fetchPairedDevices() {
     if (!this.deviceToken) return [];
     try {
-      const response = await axios.get(`${this.baseUrl}/devices/config`, this.mutationConfig(3000));
-      return response.data?.device ? [response.data.device] : [];
+      const data = await this._fetchConfigCached();
+      return data?.device ? [data.device] : [];
     } catch (error) {
       return [];
     }
@@ -146,9 +163,9 @@ class ApiClient {
   async fetchGateConfig() {
     if (!this.deviceToken) return null;
     try {
-      const response = await axios.get(`${this.baseUrl}/devices/config`, this.mutationConfig(3000));
-      return response.data;
+      return await this._fetchConfigCached();
     } catch (error) {
+      this._configCache = null; // invalidate on error so next call retries
       return null;
     }
   }
