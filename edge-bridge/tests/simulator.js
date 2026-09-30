@@ -36,6 +36,7 @@ async function runSimulation() {
     warehouseId: 1,
     gateId: 'GATE-01',
     apiBaseUrl: 'http://127.0.0.1:8000/api',
+    wsPort: 0, // R-17: auto-pick free port to avoid EADDRINUSE when Docker edge-bridge is running
   });
 
   const tagTiang1 = 'E28011606000020410000001';

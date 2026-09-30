@@ -1,5 +1,11 @@
 node_modules
 *.log
+logs/
+
+# Offline buffer & dead-letter files (R-10)
 offline_buffer.json
+offline_buffer.json.*
+
+# CCTV snapshots (auto-generated)
 snapshots/*
 !snapshots/.gitkeep

@@ -11,6 +11,7 @@ const Rc4Parser = require('./rc4Parser');
 class UniversalParser {
   /**
    * Parse incoming buffer with automatic protocol dispatch
+   * R-07: Removed redundant double-parse of RC4 — each parser is tried exactly once.
    * @param {Buffer} buffer
    * @returns {{ frames: Array<{ epc: string, readerAddress: number, rssi: number, rawHex: string, protocol: string }>, remaining: Buffer }}
    */
@@ -19,8 +20,8 @@ class UniversalParser {
       return { frames: [], remaining: Buffer.alloc(0) };
     }
 
-    // 1. If buffer starts with or contains RC4 preamble 0xCF (Official v1.1) or 0xBB (Legacy)
-    if (buffer[0] === 0xCF || buffer[0] === 0xBB || buffer.indexOf(0xCF) !== -1 || buffer.indexOf(0xBB) !== -1) {
+    // 1. If buffer contains RC4 preamble 0xCF or 0xBB, try RC4 first
+    if (buffer.indexOf(0xCF) !== -1 || buffer.indexOf(0xBB) !== -1) {
       const rc4Result = Rc4Parser.parse(buffer);
       if (rc4Result.frames.length > 0 || rc4Result.needsReinventory) {
         return rc4Result;
@@ -36,12 +37,8 @@ class UniversalParser {
       };
     }
 
-    // 3. Fallback: Try RC4 again
-    const rc4Fallback = Rc4Parser.parse(buffer);
-    if (rc4Fallback.frames.length > 0) {
-      return rc4Fallback;
-    }
-
+    // R-07: No fallback re-parse of RC4 — if both parsers found nothing, return HW-VX result
+    // (which contains the original remaining buffer for next chunk).
     return hwVxResult;
   }
 }

@@ -16,6 +16,7 @@ class CctvSnapshot {
 
   /**
    * Capture a snapshot for the current gate pass event.
+   * R-04: Uses async writeFile instead of writeFileSync to avoid blocking event loop.
    * @param {string} gateId
    * @param {'OUT'|'IN'} direction
    * @returns {string} Snapshot file path or relative URL
@@ -26,8 +27,10 @@ class CctvSnapshot {
     const fullPath = path.join(this.storageDir, filename);
 
     // In a real CCTV setup, ffmpeg or RTSP grabber pulls frame from IP camera.
-    // We create a valid timestamp reference file here.
-    fs.writeFileSync(fullPath, Buffer.from(`MOCK_CCTV_SNAPSHOT_${gateId}_${timestamp}`));
+    // R-04: non-blocking write — no longer freezes event loop on slow disk/SD card
+    fs.writeFile(fullPath, Buffer.from(`MOCK_CCTV_SNAPSHOT_${gateId}_${timestamp}`), (err) => {
+      if (err) console.warn(`⚠️ [CCTV] Failed to write snapshot marker: ${err.message}`);
+    });
 
     console.log(`🧪 [SIMULATED CCTV] Created marker file only: ${filename}`);
     return `/storage/snapshots/${filename}`;

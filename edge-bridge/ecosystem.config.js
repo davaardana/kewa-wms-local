@@ -21,7 +21,10 @@ module.exports = {
         NODE_ENV: 'production',
         PORT: 2077,
         WS_PORT: 2078,
+        LOG_LEVEL: 'info',    // R-11: explicit — never allow debug log flooding in production
       },
+      listen_timeout: 10000,  // R-26: wait up to 10s for startup before restart
+      shutdown_with_message: true,
       error_file: './logs/edge-bridge-error.log',
       out_file: './logs/edge-bridge-out.log',
       log_date_format: 'YYYY-MM-DD HH:mm:ss Z',

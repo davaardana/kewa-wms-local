@@ -11,6 +11,7 @@ class LocalCache {
     this.bufferFile = options.bufferFile || path.join(__dirname, '../offline_buffer.json');
     this.deadLetterFile = options.deadLetterFile || `${this.bufferFile}.dead-letter`;
     this.incidentFile = options.incidentFile || `${this.bufferFile}.incidents`;
+    this.maxBufferSize = options.maxBufferSize || parseInt(process.env.MAX_OFFLINE_BUFFER || '500', 10); // R-12
     this.buffer = this._loadFile(this.bufferFile);
     this.deadLetters = this._loadFile(this.deadLetterFile);
     this.incidents = this._loadFile(this.incidentFile);
@@ -68,6 +69,13 @@ class LocalCache {
    * Queue event locally when backend is unreachable.
    */
   queueEvent(eventPayload) {
+    // R-12: evict oldest events when buffer is full (FIFO) to prevent unbounded growth
+    while (this.buffer.length >= this.maxBufferSize) {
+      const evicted = this.buffer.shift();
+      if (evicted) {
+        this.deadLetters.push({ ...evicted, quarantinedAt: new Date().toISOString(), reason: 'BUFFER_OVERFLOW' });
+      }
+    }
     this.buffer.push({
       event: eventPayload,
       queuedAt: new Date().toISOString(),
@@ -75,7 +83,7 @@ class LocalCache {
     });
     // Debounced write — batch to disk max once per 2s to protect storage (#7)
     this._debouncedSave(this.bufferFile, () => this.buffer);
-    console.log(`📦 [OFFLINE BUFFER] Queued event. Current buffer size: ${this.buffer.length}`);
+    console.log(`📦 [OFFLINE BUFFER] Queued event. Current buffer size: ${this.buffer.length}/${this.maxBufferSize}`);
   }
 
   queueIncident(incident) {

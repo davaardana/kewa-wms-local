@@ -10,7 +10,7 @@ const app = new GateBridgeApp({
   tcpPort: 2088, // use dedicated test port
 });
 
-const server = app.startTcpServer(2088);
+const server = app.createTcpListener(2088);
 
 let tagCount = 0;
 app.onTagDetected = (epc, antenna, rssi) => {

@@ -53,10 +53,15 @@ class GateBridgeApp {
       : (process.env.ENABLE_DIRECT_READER !== 'false');
 
     this.directionEngine = new DirectionEngine();
-    this.relay = new RelayController();
+    // R-08: relay broadcasts lock/unlock status to WS clients
+    this.relay = new RelayController({
+      onStatusChange: (status) => this.broadcast({ type: 'RELAY_STATUS', status, timestamp: new Date().toISOString() }),
+    });
     this.cctv = new CctvSnapshot();
     this.cache = new LocalCache();
     this.api = new ApiClient(this.apiBaseUrl, this.cache, this.deviceApiToken);
+    this._maxStreamBufferBytes = 65536; // R-02/R-23: 64KB cap for TCP stream buffers
+    this._lastHeartbeatAt = 0;          // R-03: heartbeat debounce tracking
 
     // Batch buffer for multi-tag grouping
     this.batchCollector = {
@@ -89,6 +94,11 @@ class GateBridgeApp {
     this.isConnecting = false;             // prevent double-reconnect race (#9)
     this.logLevel = (process.env.LOG_LEVEL || 'info').toLowerCase(); // 'debug'|'info' (#10)
 
+    // R-13: warn if WS origins are empty in production
+    if (this.wsAllowedOrigins.length === 0 && process.env.NODE_ENV === 'production') {
+      console.warn('⚠️ [SECURITY] WS_ALLOWED_ORIGINS is empty — all origins accepted. Set this in production!');
+    }
+
     // Start WebSocket broadcaster
     this.startWebSocketServer();
 
@@ -102,7 +112,11 @@ class GateBridgeApp {
     this.heartbeatTimer = setInterval(() => this._dispatchHeartbeat(), this.heartbeatIntervalMs);
     setImmediate(() => this._dispatchHeartbeat());
 
-    // Watchdog check for socket health & RF loop refresh (Every 15s)
+    // R-09: Background gate config sync every 10s (instead of on-demand per dispatch)
+    this._syncConfigTimer = setInterval(() => this.syncGateConfig(), 10000);
+    setImmediate(() => this.syncGateConfig());
+
+    // Watchdog check for socket health & RF loop refresh (Every 1s)
     this.watchdogTimer = setInterval(() => this._runWatchdogCheck(), 1000);
   }
 
@@ -118,10 +132,15 @@ class GateBridgeApp {
     console.log(`[READER HEALTH] ${status}${reason ? `: ${reason}` : ''}`);
     this.broadcast({ type: 'READER_HEALTH', ...incident });
     this.api.sendHealthIncident(incident);
-    this._dispatchHeartbeat();
+    // R-03: debounce heartbeat — max once per 5s to prevent cascade on flapping reader
+    const now = Date.now();
+    if (now - this._lastHeartbeatAt >= 5000) {
+      this._dispatchHeartbeat();
+    }
   }
 
   async _dispatchHeartbeat() {
+    this._lastHeartbeatAt = Date.now(); // R-03: track last heartbeat time
     const memory = process.memoryUsage();
     const heapUsedMb = Math.round((memory.heapUsed / 1024 / 1024) * 10) / 10;
     const uptimeSec = Math.round(process.uptime());
@@ -141,6 +160,7 @@ class GateBridgeApp {
         reader_last_response_at: this.readerLastResponseAt,
         reader_status_changed_at: this.readerStatusChangedAt,
         reader_error: this.readerError,
+        relay_status: this.relay.getStatus().isUnlocked ? 'unlocked' : 'locked', // R-08
       },
     });
   }
@@ -389,6 +409,12 @@ class GateBridgeApp {
 
     socket.on('data', (chunk) => {
       streamBuffer = Buffer.concat([streamBuffer, chunk]);
+      // R-02: cap direct reader stream buffer to prevent OOM from malformed data
+      if (streamBuffer.length > this._maxStreamBufferBytes) {
+        console.warn(`⚠️ [BUFFER OVERFLOW] Direct reader buffer exceeded ${this._maxStreamBufferBytes}B — resetting`);
+        streamBuffer = Buffer.alloc(0);
+        return;
+      }
       const { frames, remaining, needsReinventory } = UniversalParser.parse(streamBuffer);
       streamBuffer = remaining;
 
@@ -468,7 +494,8 @@ class GateBridgeApp {
    * Watchdog background health checker (proactively verifies socket status)
    */
   _runWatchdogCheck() {
-    if (this.enableDirectReader && !this.directReaderSocket && !this.directReaderReconnectTimer) {
+    // R-01: also check isConnecting to prevent double-connect race
+    if (this.enableDirectReader && !this.directReaderSocket && !this.directReaderReconnectTimer && !this.isConnecting) {
       console.log(`🛡️ [WATCHDOG PROBE] Reader socket terdeteksi mati tanpa antrean timer. Memulai penyambungan ulang otomatis...`);
       this.connectDirectReader();
       return;
@@ -482,6 +509,17 @@ class GateBridgeApp {
           this.directReaderSocket.write(startCmd);
         } catch (e) {}
       }
+    }
+
+    // R-14/R-15: prune expired entries from Maps to prevent slow memory leak
+    const _pruneNow = Date.now();
+    if (this.wsAuthFailureMap) {
+      for (const [ip, rec] of this.wsAuthFailureMap) {
+        if (_pruneNow > rec.resetAt) this.wsAuthFailureMap.delete(ip);
+      }
+    }
+    for (const [epc, ts] of this.lastTagBroadcastAt) {
+      if (_pruneNow - ts > 300000) this.lastTagBroadcastAt.delete(epc); // 5 min TTL
     }
   }
 
@@ -498,6 +536,12 @@ class GateBridgeApp {
 
       socket.on('data', (chunk) => {
         streamBuffer = Buffer.concat([streamBuffer, chunk]);
+        // R-23: cap TCP listener stream buffer to prevent OOM from malformed data
+        if (streamBuffer.length > this._maxStreamBufferBytes) {
+          console.warn(`⚠️ [BUFFER OVERFLOW] TCP listener buffer on port ${port} exceeded ${this._maxStreamBufferBytes}B — resetting`);
+          streamBuffer = Buffer.alloc(0);
+          return;
+        }
         const { frames, remaining } = UniversalParser.parse(streamBuffer);
         streamBuffer = remaining;
 
@@ -507,7 +551,7 @@ class GateBridgeApp {
             antenna = 'B';
           }
 
-          console.log(`📡 [TAG READ] EPC: ${frame.epc} | RSSI: ${frame.rssi}dBm | Antena: ${antenna} | Proto: ${frame.protocol || 'AUTO'}`);
+          this._debug(`📡 [TAG READ] EPC: ${frame.epc} | RSSI: ${frame.rssi}dBm | Antena: ${antenna} | Proto: ${frame.protocol || 'AUTO'}`);
           this.onTagDetected(frame.epc, antenna, frame.rssi);
         }
       });
@@ -654,10 +698,13 @@ class GateBridgeApp {
 
     console.log(`\n🚀 [GATE EVENT TRIGGER] Dispatching ${tagsArray.length} tags (Direction: ${direction}, Mode: Single/Dual Reader)`);
 
-    await this.syncGateConfig();
+    // R-09: gate config is now synced in background every 10s — no need to await here
     if (!this.gateMode || (this.gateMode === 'SINGLE_ANTENNA_SESSION' && !this.authorizedTransaction)) {
-      console.warn('🚨 [GATE FAIL-CLOSED] Missing authoritative mode/session; event not authorized.');
+      const failReason = !this.gateMode ? 'No gate mode configured' : 'No authorized transaction session';
+      console.warn(`🚨 [GATE FAIL-CLOSED] ${failReason}; event not authorized.`);
       this.relay.lock();
+      // R-22: broadcast fail reason to dashboard so operators see why gate didn't open
+      this.broadcast({ type: 'GATE_FAIL_CLOSED', reason: failReason, tags: tagsArray.length, timestamp: new Date().toISOString() });
       return;
     }
 
@@ -714,6 +761,9 @@ class GateBridgeApp {
     if (this.inventoryPollTimer) {
       clearInterval(this.inventoryPollTimer);
     }
+    if (this._syncConfigTimer) {
+      clearInterval(this._syncConfigTimer); // R-09: stop background config sync
+    }
     if (this.wss) {
       this.wss.close();
     }
@@ -721,6 +771,8 @@ class GateBridgeApp {
     if (this.batchCollector.deadlineTimer) clearTimeout(this.batchCollector.deadlineTimer);
     // Flush any pending debounced disk writes before exit (#7)
     if (this.cache && typeof this.cache.flushPending === 'function') this.cache.flushPending();
+    // R-21: return dispatchChain promise so callers can await pending gate events
+    return this.dispatchChain;
   }
 }
 
@@ -731,9 +783,10 @@ if (require.main === module) {
   const app = new GateBridgeApp();
   app.startTcpServers();
 
-  const shutdown = (signal) => {
+  const shutdown = async (signal) => {
     console.log(`\n🛑 [SYSTEM ${signal}] Gracefully shutting down Edge Bridge Daemon...`);
-    app.stop();
+    // R-21: await any in-flight batch dispatch before exiting
+    await app.stop();
     setTimeout(() => process.exit(0), 500);
   };
 
