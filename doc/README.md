@@ -37,6 +37,7 @@ Indeks dokumentasi. Status mengikuti implementasi aktual, bukan target desain.
 - [`command-docker-presentasi-windows.md`](command-docker-presentasi-windows.md) — command operasional presentasi Windows, Adminer, database, dan tunnel.
 - [`instalasi-edge-bridge-client-windows.md`](instalasi-edge-bridge-client-windows.md) — pilot Edge Windows; acceptance service masih diperlukan.
 - [`instalasi-hardware-reader.md`](instalasi-hardware-reader.md) — wiring, RF, dan commissioning.
+- [`contoh-pemasangan-tag.md`](contoh-pemasangan-tag.md) — metode dan ilustrasi pemasangan tag RFID pada tiang besi bulat.
 
 ## Arsip dan komersial
 

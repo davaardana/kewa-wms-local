@@ -129,6 +129,7 @@ services:
       - READER_PORT=2022
       - HEARTBEAT_INTERVAL_MS=10000
       - READER_RESPONSE_TIMEOUT_MS=5000
+      - RF_POWER_DBM=${RF_POWER_DBM:-30}
     depends_on:
       - nginx
     networks:

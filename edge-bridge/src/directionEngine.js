@@ -90,21 +90,56 @@ class DirectionEngine {
    */
   calculateRssiTrend(history) {
     if (!history || history.length < 2) {
-      return { trend: 'STATIC', deltaRssi: 0 };
+      return { trend: 'STATIC', deltaRssi: 0, peakRssi: history?.[0]?.rssi || -100, speedKmh: null };
     }
 
     const firstRssi = history[0].rssi;
     const lastRssi = history[history.length - 1].rssi;
     const deltaRssi = lastRssi - firstRssi;
 
-    let trend = 'STATIC';
-    if (deltaRssi >= 4) {
-      trend = 'APPROACHING'; // Sinyal makin kuat -> Mendekati
-    } else if (deltaRssi <= -4) {
-      trend = 'DEPARTING'; // Sinyal makin lemah -> Menjauhi
+    // Find peak RSSI (strongest signal = closest point)
+    let peakRssi = -200;
+    for (const r of history) {
+      if (r.rssi > peakRssi) peakRssi = r.rssi;
     }
 
-    return { trend, deltaRssi };
+    let trend = 'STATIC';
+    if (deltaRssi >= 4) {
+      trend = 'APPROACHING'; // Sinyal makin kuat → Mendekati
+    } else if (deltaRssi <= -4) {
+      trend = 'DEPARTING'; // Sinyal makin lemah → Menjauhi
+    }
+
+    // Feature #7: Speed estimation from RSSI curve transit time
+    const speedKmh = this.estimateSpeed(history);
+
+    return { trend, deltaRssi, peakRssi, speedKmh };
+  }
+
+  /**
+   * Feature #7: Estimate vehicle speed from RSSI curve width.
+   * The reader beam is approximately beamWidthMeters wide at gate distance.
+   * Transit time = time from first read to last read of a tag.
+   * Speed ≈ beam_width / transit_time.
+   *
+   * @param {Array<{ timestamp: number, rssi: number }>} history
+   * @returns {number|null} Estimated speed in km/h, or null if insufficient data
+   */
+  estimateSpeed(history) {
+    if (!history || history.length < 3) return null;
+
+    const transitMs = history[history.length - 1].timestamp - history[0].timestamp;
+    if (transitMs < 100) return null; // too fast / too few samples
+
+    // Approximate beam width for 12 dBi antenna at ~3m gate distance ≈ 4 meters
+    const beamWidthMeters = this.beamWidthMeters || 4.0;
+    const speedMs = beamWidthMeters / (transitMs / 1000); // m/s
+    const speedKmh = Math.round(speedMs * 3.6 * 10) / 10; // km/h with 1 decimal
+
+    // Sanity check: speed should be between 0.5 and 80 km/h for a truck/forklift
+    if (speedKmh < 0.5 || speedKmh > 80) return null;
+
+    return speedKmh;
   }
 
   /**

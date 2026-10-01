@@ -9,3 +9,6 @@ offline_buffer.json.*
 # CCTV snapshots (auto-generated)
 snapshots/*
 !snapshots/.gitkeep
+
+# Audit trail logs (Feature #9 — append-only, stay on edge device)
+audit_logs/

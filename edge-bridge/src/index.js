@@ -20,6 +20,8 @@ const RelayController = require('./relayController');
 const CctvSnapshot = require('./cctvSnapshot');
 const LocalCache = require('./localCache');
 const ApiClient = require('./apiClient');
+const AuditLogger = require('./auditLogger');
+const MeshSync = require('./meshSync');
 const crypto = require('crypto');
 
 class GateBridgeApp {
@@ -60,14 +62,35 @@ class GateBridgeApp {
     this.cctv = new CctvSnapshot();
     this.cache = new LocalCache();
     this.api = new ApiClient(this.apiBaseUrl, this.cache, this.deviceApiToken);
+    this.auditLogger = new AuditLogger();   // Feature #9: append-only audit trail
+    this.meshSync = new MeshSync({          // Feature #10: edge-to-edge mesh sync
+      gateId: this.gateId,
+      warehouseId: this.warehouseId,
+      onPeerSighting: (s) => this._debug(`🔗 [MESH] Peer sighting: ${s.epc} at ${s.gateId} (${s.direction})`),
+    });
     this._maxStreamBufferBytes = 65536; // R-02/R-23: 64KB cap for TCP stream buffers
     this._lastHeartbeatAt = 0;          // R-03: heartbeat debounce tracking
+
+    // Feature #1: Tag counter & throughput metrics
+    this._tagStats = {
+      totalReads: 0,           // total raw reads since boot
+      uniqueEpcsEver: new Set(), // unique EPCs seen since boot
+      minuteReads: 0,          // reads in current minute window
+      minuteUniqueEpcs: new Set(), // unique EPCs in current minute
+      minuteStart: Date.now(), // start of current minute window
+      lastBatchTagCount: 0,    // tag count of last dispatched batch (for Q-tuning)
+    };
+
+    // Feature #8: Tag health monitor — track RSSI per EPC over time
+    this._tagHealthHistory = new Map(); // epc -> { readings: [{ rssi, ts }], avgRssi, peakRssi }
+    this._tagHealthMaxEntries = 500;    // max tracked EPCs
+    this._tagHealthMaxReadings = 20;    // max readings per EPC
 
     // Batch buffer for multi-tag grouping
     this.batchCollector = {
       timer: null,
       direction: null,
-      tags: new Set(),
+      tags: new Map(),  // Feature #3: Map<epc, { rssi, count, firstSeen }> instead of Set
       eventId: null,
       observedAt: null,
       deadlineTimer: null,
@@ -93,6 +116,7 @@ class GateBridgeApp {
     this.lastTagBroadcastAt = new Map();   // epc -> timestamp — broadcast dedup (#6)
     this.isConnecting = false;             // prevent double-reconnect race (#9)
     this.logLevel = (process.env.LOG_LEVEL || 'info').toLowerCase(); // 'debug'|'info' (#10)
+    this._regionCorrected = false;         // Feature #6: track if region has been auto-corrected
 
     // R-13: warn if WS origins are empty in production
     if (this.wsAllowedOrigins.length === 0 && process.env.NODE_ENV === 'production') {
@@ -145,6 +169,16 @@ class GateBridgeApp {
     const heapUsedMb = Math.round((memory.heapUsed / 1024 / 1024) * 10) / 10;
     const uptimeSec = Math.round(process.uptime());
 
+    // Feature #1: rotate minute stats
+    const now = Date.now();
+    let minuteReads = this._tagStats.minuteReads;
+    let minuteUnique = this._tagStats.minuteUniqueEpcs.size;
+    if (now - this._tagStats.minuteStart >= 60000) {
+      this._tagStats.minuteReads = 0;
+      this._tagStats.minuteUniqueEpcs.clear();
+      this._tagStats.minuteStart = now;
+    }
+
     await this.api.sendHeartbeat({
       warehouse_id: this.warehouseId,
       device_code: this.syncedDeviceCode || `EDGE-${this.gateId}`,
@@ -161,6 +195,14 @@ class GateBridgeApp {
         reader_status_changed_at: this.readerStatusChangedAt,
         reader_error: this.readerError,
         relay_status: this.relay.getStatus().isUnlocked ? 'unlocked' : 'locked', // R-08
+        // Feature #1: Tag counter & throughput metrics
+        total_reads_since_boot: this._tagStats.totalReads,
+        unique_epcs_since_boot: this._tagStats.uniqueEpcsEver.size,
+        reads_last_minute: minuteReads,
+        unique_epcs_last_minute: minuteUnique,
+        direction_engine_tracked: this.directionEngine.tagReadHistory.size,
+        tag_health_tracked: this._tagHealthHistory.size,
+        mesh_peer_sightings: this.meshSync.peerSightings.size,
       },
     });
   }
@@ -242,6 +284,34 @@ class GateBridgeApp {
             } else if (data.action === 'GET_MODE') {
               if (!this.isWsCommandAllowed(ws, 'GET_MODE')) throw new Error('Command forbidden');
               ws.send(JSON.stringify({ type: 'MODE_INFO', mode: this.operationalMode }));
+            } else if (data.action === 'WRITE_TAG') {
+              // Feature #4: Write EPC to tag via TCP command from dashboard
+              if (!this.isWsCommandAllowed(ws, 'WRITE_TAG')) throw new Error('Command forbidden');
+              if (!data.epc || typeof data.epc !== 'string' || data.epc.length < 4) {
+                ws.send(JSON.stringify({ type: 'ERROR', code: 'INVALID_EPC', message: 'EPC hex string required (min 4 chars)' }));
+              } else if (!this.directReaderSocket || this.directReaderSocket.destroyed) {
+                ws.send(JSON.stringify({ type: 'ERROR', code: 'READER_OFFLINE', message: 'Reader not connected' }));
+              } else {
+                try {
+                  const writeCmd = Rc4Parser.buildWriteEpcCommand(data.epc, data.password || '00000000');
+                  this.directReaderSocket.write(writeCmd);
+                  this.auditLogger.log('TAG_WRITE', { epc: data.epc, user_id: ws.auth.userId });
+                  ws.send(JSON.stringify({ type: 'WRITE_TAG_SENT', epc: data.epc }));
+                  console.log(`✍️ [WRITE TAG] Write EPC command sent: ${data.epc} (by user #${ws.auth.userId})`);
+                } catch (writeErr) {
+                  ws.send(JSON.stringify({ type: 'ERROR', code: 'WRITE_FAILED', message: writeErr.message }));
+                }
+              }
+            } else if (data.action === 'GET_STATS') {
+              // Feature #1: Get tag counter stats via WS
+              if (!this.isWsCommandAllowed(ws, 'GET_STATS')) throw new Error('Command forbidden');
+              ws.send(JSON.stringify({
+                type: 'TAG_STATS',
+                total_reads: this._tagStats.totalReads,
+                unique_epcs: this._tagStats.uniqueEpcsEver.size,
+                reads_last_minute: this._tagStats.minuteReads,
+                unique_last_minute: this._tagStats.minuteUniqueEpcs.size,
+              }));
             } else if (data.action === 'SIMULATE_TAG' || data.action === 'TRIGGER_SCAN') {
               ws.send(JSON.stringify({ type: 'ERROR', code: 'SIMULATION_DISABLED' }));
             } else {
@@ -412,21 +482,35 @@ class GateBridgeApp {
     };
 
     socket.connect(this.readerPort, this.readerHost, () => {
-      this.isConnecting = false; // Connection established, release lock (#9)
+      this.isConnecting = false;
       this.lastTagSeenAt = Date.now();
       console.log(`✅ [DIRECT READER CONNECTED] Successfully connected to EL-UHF-RC4 Reader at ${this.readerHost}:${this.readerPort}!`);
 
-      // Step 1: Send MODULE_INIT (0x0050) to boot/wake RF baseband module after power loss / cold boot
+      // Step 1: MODULE_INIT to wake RF baseband
       console.log(`⚡ [DIRECT READER INIT] Sending MODULE_INIT (CFFF0050000726) to wake up UHF RF Module...`);
       sendInitCmd();
 
-      // Step 2: 200ms for RF PLL lock, then start continuous inventory.
-      // Reader auto-sends rounds; we resend only on 0x12 (cycle-complete) — no 500ms poll needed (#3)
+      // Step 2: 300ms for RF PLL lock, then GET current basic settings (to read current power)
       if (this.directReaderInitTimer) clearTimeout(this.directReaderInitTimer);
       this.directReaderInitTimer = setTimeout(() => {
-        sendInventoryCmd();
-        this._debug(`🚀 [DIRECT READER INIT] Start Inventory loop active (CFFF0001050000000000F5B5).`);
-      }, 200);
+        if (this.directReaderSocket && !this.directReaderSocket.destroyed && this.directReaderSocket.writable) {
+          const targetPower = parseInt(process.env.RF_POWER_DBM ?? '30', 10);
+          console.log(`📻 [RF POWER] Reading current reader settings before setting power to ${targetPower} dBm...`);
+          this.directReaderSocket.write(Rc4Parser.buildGetBasicSettingsCommand());
+          // Step 3: 500ms later set power then start inventory
+          setTimeout(() => {
+            if (this.directReaderSocket && !this.directReaderSocket.destroyed && this.directReaderSocket.writable) {
+              const setPowerCmd = Rc4Parser.buildSetRfPowerCommand(targetPower, this._lastBasicSetData ?? null);
+              this.directReaderSocket.write(setPowerCmd);
+              console.log(`📻 [RF POWER] SET_BASIC_SETTINGS sent — RF Power target: ${targetPower} dBm`);
+              setTimeout(() => { sendInventoryCmd(); }, 200);
+            }
+          }, 500);
+        } else {
+          sendInventoryCmd();
+        }
+        this._debug(`🚀 [DIRECT READER INIT] Init sequence complete.`);
+      }, 300);
     });
 
     socket.on('data', (chunk) => {
@@ -453,6 +537,44 @@ class GateBridgeApp {
         for (const frame of frames) {
           if (frame.isInitAck) {
             console.log(`✨ [DIRECT READER] Module Init ACK received: ${frame.status} (RF baseband online)`);
+            continue;
+          }
+          // Handle GET_BASIC_SETTINGS response — save basicSetData for next SET command
+          if (frame.isBasicSettingsResponse) {
+            if (frame.basicSetData) {
+              this._lastBasicSetData = frame.basicSetData;
+              console.log(`📻 [RF POWER] Current reader RF Power: ${frame.rfPowerDbm} dBm`);
+
+              // Feature #6: Auto region frequency detection & correction
+              if (!this._regionCorrected) {
+                const freqInfo = Rc4Parser.parseFrequencyRegion(frame.basicSetData);
+                if (freqInfo.needsCorrection) {
+                  console.warn(`⚠️ [REGION] Reader menggunakan frekuensi ${freqInfo.region} (902-928 MHz). Auto-koreksi ke Indonesia (920-925 MHz)...`);
+                  const correctionCmd = Rc4Parser.buildSetIndonesiaFreqCommand(frame.basicSetData, parseInt(process.env.RF_POWER_DBM ?? '30', 10));
+                  if (this.directReaderSocket && !this.directReaderSocket.destroyed) {
+                    this.directReaderSocket.write(correctionCmd);
+                    console.log(`🌏 [REGION] SET_BASIC_SETTINGS dikirim dengan frekuensi Indonesia (920-925 MHz)`);
+                    this.auditLogger.log('SYSTEM', { action: 'REGION_AUTO_CORRECTED', from: freqInfo.region, to: 'ID_920_925' });
+                  }
+                  this._regionCorrected = true;
+                } else {
+                  console.log(`🌏 [REGION] Frekuensi reader: ${freqInfo.region} (OK)`);
+                  this._regionCorrected = true;
+                }
+              }
+            } else {
+              console.warn(`📻 [RF POWER] GET_BASIC_SETTINGS response status: ${frame.status}`);
+            }
+            continue;
+          }
+          // Handle SET_BASIC_SETTINGS ACK
+          if (frame.isSetBasicSettingsAck) {
+            if (frame.status === 'SUCCESS') {
+              const targetPower = parseInt(process.env.RF_POWER_DBM ?? '30', 10);
+              console.log(`✅ [RF POWER] RF Power successfully set to ${targetPower} dBm on reader`);
+            } else {
+              console.warn(`⚠️ [RF POWER] SET_BASIC_SETTINGS failed: ${frame.status}`);
+            }
             continue;
           }
           if (!frame.epc) continue;
@@ -519,6 +641,9 @@ class GateBridgeApp {
    * Watchdog background health checker (proactively verifies socket status)
    */
   _runWatchdogCheck() {
+    // Purge expired tag read history from DirectionEngine to prevent memory leak
+    this.directionEngine.cleanupExpired();
+
     // R-01: also check isConnecting to prevent double-connect race
     if (this.enableDirectReader && !this.directReaderSocket && !this.directReaderReconnectTimer && !this.isConnecting) {
       console.log(`🛡️ [WATCHDOG PROBE] Reader socket terdeteksi mati tanpa antrean timer. Memulai penyambungan ulang otomatis...`);
@@ -625,6 +750,15 @@ class GateBridgeApp {
       return;
     }
 
+    // Feature #1: Update tag counter stats
+    this._tagStats.totalReads++;
+    this._tagStats.minuteReads++;
+    this._tagStats.uniqueEpcsEver.add(epc);
+    this._tagStats.minuteUniqueEpcs.add(epc);
+
+    // Feature #8: Update tag health history
+    this._updateTagHealth(epc, rssi);
+
     // 1. Broadcast raw tag read — dedup per EPC per 1s to avoid flooding WS clients (#6)
     const _nowDedup = Date.now();
     if (_nowDedup - (this.lastTagBroadcastAt.get(epc) || 0) >= 1000) {
@@ -650,14 +784,55 @@ class GateBridgeApp {
     }
 
     if (result.completed) {
-      console.log(`🎯 [GATE SENSOR] Tag ${result.epc} passed dual sequence: ${result.direction} (Δt: ${result.timeDeltaMs}ms)`);
-      this._accumulateBatch(result.epc, result.direction === 'B_TO_A' ? 'IN' : 'OUT');
+      // Feature #7: Log speed estimation if available
+      const speedInfo = result.rssiTrend?.speedKmh ? ` | Speed: ~${result.rssiTrend.speedKmh} km/h` : '';
+      console.log(`🎯 [GATE SENSOR] Tag ${result.epc} passed dual sequence: ${result.direction} (Δt: ${result.timeDeltaMs}ms${speedInfo})`);
+
+      // Feature #7: Broadcast speed alert if too fast
+      if (result.rssiTrend?.speedKmh && result.rssiTrend.speedKmh > 15) {
+        this.broadcast({
+          type: 'SPEED_ALERT',
+          epc: result.epc,
+          speed_kmh: result.rssiTrend.speedKmh,
+          message: `⚠️ Kendaraan melintas ${result.rssiTrend.speedKmh} km/h — tag mungkin terlewat!`,
+          timestamp: new Date().toISOString(),
+        });
+      }
+
+      this._accumulateBatch(result.epc, result.direction === 'B_TO_A' ? 'IN' : 'OUT', rssi);
     } else if (this.gateMode === 'SINGLE_ANTENNA_SESSION' && this.authorizedTransaction) {
-      this._accumulateBatch(epc, this.authorizedTransaction.type === 'OUT_FULFILLMENT' ? 'OUT' : 'IN');
+      this._accumulateBatch(epc, this.authorizedTransaction.type === 'OUT_FULFILLMENT' ? 'OUT' : 'IN', rssi);
     }
   }
 
-  _accumulateBatch(epc, direction = 'OUT') {
+  // Feature #8: Tag Health Monitor
+  _updateTagHealth(epc, rssi) {
+    let health = this._tagHealthHistory.get(epc);
+    if (!health) {
+      // Evict oldest if at capacity
+      if (this._tagHealthHistory.size >= this._tagHealthMaxEntries) {
+        const oldestKey = this._tagHealthHistory.keys().next().value;
+        this._tagHealthHistory.delete(oldestKey);
+      }
+      health = { readings: [], avgRssi: rssi, peakRssi: rssi };
+      this._tagHealthHistory.set(epc, health);
+    }
+    health.readings.push({ rssi, ts: Date.now() });
+    if (health.readings.length > this._tagHealthMaxReadings) {
+      health.readings.shift();
+    }
+    // Recalculate avg and peak
+    let sum = 0;
+    let peak = -200;
+    for (const r of health.readings) {
+      sum += r.rssi;
+      if (r.rssi > peak) peak = r.rssi;
+    }
+    health.avgRssi = Math.round(sum / health.readings.length);
+    health.peakRssi = peak;
+  }
+
+  _accumulateBatch(epc, direction = 'OUT', rssi = -60) {
     if (!this.gateMode) return;
     if (!this.batchCollector.eventId) {
       this.batchCollector.eventId = crypto.randomUUID();
@@ -668,7 +843,15 @@ class GateBridgeApp {
       this._queueDispatch();
     }
     this.batchCollector.direction = direction;
-    this.batchCollector.tags.add(epc);
+
+    // Feature #3: Store RSSI metadata per tag (Map instead of Set)
+    const existing = this.batchCollector.tags.get(epc);
+    if (existing) {
+      existing.count++;
+      existing.rssi = Math.max(existing.rssi, rssi); // keep strongest signal
+    } else {
+      this.batchCollector.tags.set(epc, { rssi, count: 1, firstSeen: Date.now() });
+    }
 
     if (this.batchCollector.timer) {
       clearTimeout(this.batchCollector.timer);
@@ -689,7 +872,10 @@ class GateBridgeApp {
   }
 
   _takeBatch() {
-    const tagsArray = Array.from(this.batchCollector.tags);
+    // Feature #3: Convert Map entries to enriched array
+    const tagsArray = Array.from(this.batchCollector.tags.entries()).map(
+      ([epc, meta]) => ({ epc, rssi: meta.rssi, read_count: meta.count, first_seen: meta.firstSeen })
+    );
     const direction = this.batchCollector.direction || 'OUT';
     const eventId = this.batchCollector.eventId;
     const observedAt = this.batchCollector.observedAt;
@@ -709,6 +895,9 @@ class GateBridgeApp {
 
   async _dispatchBatch(batch) {
     const { tagsArray, direction, eventId, observedAt } = batch;
+
+    // Feature #1: Track last batch tag count for Q-value tuning
+    this._tagStats.lastBatchTagCount = tagsArray.length;
 
     // Check if Reader is in Enrollment / Registration Mode
     if (this.operationalMode === 'ENROLLMENT') {
@@ -739,6 +928,7 @@ class GateBridgeApp {
       ? (direction === 'OUT' ? 'A_TO_B' : 'B_TO_A')
       : 'SINGLE_ANTENNA';
 
+    // Feature #3: epc_list sekarang berisi objek {epc, rssi, read_count} bukan string
     const payload = {
       warehouse_id: this.warehouseId,
       gate_id: this.gateId,
@@ -759,6 +949,23 @@ class GateBridgeApp {
 
     const response = await this.api.sendGateEvent(payload);
 
+    // Feature #9: Write to append-only audit trail
+    this.auditLogger.log('GATE_PASS', {
+      event_id: eventId,
+      direction,
+      gate_id: this.gateId,
+      warehouse_id: this.warehouseId,
+      tag_count: tagsArray.length,
+      epc_list: tagsArray.map(t => t.epc),
+      transaction_id: transactionId,
+      unlock: response?.unlock_gate || false,
+    });
+
+    // Feature #10: Broadcast sighting to peer gates via mesh
+    this.meshSync.broadcastSighting(
+      tagsArray.map(t => ({ epc: t.epc, direction }))
+    );
+
     this.broadcast({
       type: 'GATE_EVENT',
       payload,
@@ -773,21 +980,42 @@ class GateBridgeApp {
       console.log(`🚨 [GATE CONTROLLER] Access DENIED / FLAGGED! Anomali terdeteksi, notifikasi terkirim.`);
       this.relay.lock();
     }
+
+    // Feature #5: Auto Q-Value tuning after batch dispatch
+    this._autoTuneQValue(tagsArray.length);
+  }
+
+  // Feature #5: Auto Q-Value Tuning based on tag population
+  _autoTuneQValue(tagCount) {
+    if (!this.directReaderSocket || this.directReaderSocket.destroyed || !this._lastBasicSetData) return;
+    const optimalQ = Rc4Parser.calculateOptimalQValue(tagCount);
+    const currentQ = this._lastBasicSetData[17] || 4;
+    if (optimalQ !== currentQ) {
+      const targetPower = parseInt(process.env.RF_POWER_DBM ?? '30', 10);
+      const cmd = Rc4Parser.buildSetPowerAndQCommand(targetPower, optimalQ, this._lastBasicSetData);
+      this.directReaderSocket.write(cmd);
+      this._lastBasicSetData[17] = optimalQ;
+      console.log(`⚙️ [AUTO Q-TUNE] Q-Value diubah: ${currentQ} → ${optimalQ} (berdasarkan ${tagCount} tag terdeteksi)`);
+    }
   }
 
   stop() {
     console.log('🛑 [EDGE BRIDGE] Stopping services...');
+    // Clear all interval timers to prevent resource leak
+    if (this.flushTimer) { clearInterval(this.flushTimer); this.flushTimer = null; }
+    if (this.heartbeatTimer) { clearInterval(this.heartbeatTimer); this.heartbeatTimer = null; }
+    if (this.watchdogTimer) { clearInterval(this.watchdogTimer); this.watchdogTimer = null; }
+    if (this.inventoryPollTimer) { clearInterval(this.inventoryPollTimer); this.inventoryPollTimer = null; }
+    if (this._syncConfigTimer) { clearInterval(this._syncConfigTimer); this._syncConfigTimer = null; }
     for (const server of this.servers) {
       server.close();
     }
     if (this.directReaderSocket) {
       try { this.directReaderSocket.destroy(); } catch (e) {}
     }
-    if (this.inventoryPollTimer) {
-      clearInterval(this.inventoryPollTimer);
-    }
-    if (this._syncConfigTimer) {
-      clearInterval(this._syncConfigTimer); // R-09: stop background config sync
+    if (this.directReaderReconnectTimer) {
+      clearTimeout(this.directReaderReconnectTimer);
+      this.directReaderReconnectTimer = null;
     }
     if (this.wss) {
       this.wss.close();
@@ -796,6 +1024,10 @@ class GateBridgeApp {
     if (this.batchCollector.deadlineTimer) clearTimeout(this.batchCollector.deadlineTimer);
     // Flush any pending debounced disk writes before exit (#7)
     if (this.cache && typeof this.cache.flushPending === 'function') this.cache.flushPending();
+    // Feature #9: Close audit logger
+    if (this.auditLogger) this.auditLogger.close();
+    // Feature #10: Close mesh sync
+    if (this.meshSync) this.meshSync.close();
     // R-21: return dispatchChain promise so callers can await pending gate events
     return this.dispatchChain;
   }
@@ -810,9 +1042,16 @@ if (require.main === module) {
 
   const shutdown = async (signal) => {
     console.log(`\n🛑 [SYSTEM ${signal}] Gracefully shutting down Edge Bridge Daemon...`);
+    // Feature #8 (shutdown guard): Force exit if stop() hangs
+    const forceExitTimer = setTimeout(() => {
+      console.error('⚠️ [FORCE EXIT] Graceful shutdown timeout (10s) — forcing exit.');
+      process.exit(1);
+    }, 10000);
+    forceExitTimer.unref();
     // R-21: await any in-flight batch dispatch before exiting
     await app.stop();
-    setTimeout(() => process.exit(0), 500);
+    clearTimeout(forceExitTimer);
+    process.exit(0);
   };
 
   process.on('SIGINT', () => shutdown('SIGINT'));
