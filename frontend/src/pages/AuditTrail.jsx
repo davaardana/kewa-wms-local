@@ -1,17 +1,19 @@
+import { FlameButton } from '../components/ui/flame-button';
 import React, { useState, useEffect } from 'react';
 import { reportApi, masterApi } from '../services/api';
 import { openAuthenticatedEdgeSocket } from '../services/edgeWebSocket';
 import { showToast } from '../components/Toast';
 import Portal from '../components/Portal';
-import { 
-  ArrowRightLeft, 
-  ShieldCheck, 
-  CheckCircle2, 
-  User, 
-  Search, 
-  RefreshCw, 
-  Calendar, 
-  MapPin, 
+import StockCardTab from './StockCard';
+import {
+  ArrowRightLeft,
+  ShieldCheck,
+  CheckCircle2,
+  User,
+  Search,
+  RefreshCw,
+  Calendar,
+  MapPin,
   Scan,
   AlertTriangle,
   Lock,
@@ -19,15 +21,17 @@ import {
   FileText,
   Printer,
   CheckCircle,
-  Eye
+  Eye,
+  Boxes,
+  History,
 } from 'lucide-react';
 
-export default function AuditTrail({ defaultTab = 'trail', currentUser = null }) {
+export default function Laporan({ defaultTab = 'trail', currentUser = null }) {
   const [logs, setLogs] = useState([]);
   const [loading, setLoading] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [actionFilter, setActionFilter] = useState('');
-  const [activeTab, setActiveTab] = useState(defaultTab); // 'trail' | 'opname'
+  const [activeTab, setActiveTab] = useState(defaultTab); // 'trail' | 'opname' | 'stock'
 
   useEffect(() => {
     if (defaultTab) {
@@ -84,7 +88,12 @@ export default function AuditTrail({ defaultTab = 'trail', currentUser = null })
       } catch (e) {
         if (!isUnmounted) {
           setWsConnected(false);
-          reconnectTimer = setTimeout(connectWs, 3000);
+          // Don't retry on non-recoverable errors (no device, permission denied, validation)
+          const status = e?.response?.status;
+          const isNonRecoverable = status === 404 || status === 403 || status === 422 || status === 409;
+          if (!isNonRecoverable) {
+            reconnectTimer = setTimeout(connectWs, 3000);
+          }
         }
       }
     };
@@ -255,7 +264,7 @@ export default function AuditTrail({ defaultTab = 'trail', currentUser = null })
   const getActionBadge = (action) => {
     switch (action) {
       case 'STOCK_IN':
-        return <span className="bg-emerald-100 text-emerald-800 border border-emerald-200 px-2 py-0.5 rounded-full font-bold text-[10px]">STOCK-IN</span>;
+        return <span className="bg-blue-100 text-blue-800 border border-blue-200 px-2 py-0.5 rounded-full font-bold text-[10px]">STOCK-IN</span>;
       case 'PREPARED':
         return <span className="bg-blue-100 text-blue-800 border border-blue-200 px-2 py-0.5 rounded-full font-bold text-[10px]">PREPARED</span>;
       case 'GATE_OUT':
@@ -275,16 +284,30 @@ export default function AuditTrail({ defaultTab = 'trail', currentUser = null })
 
   return (
     <div className="space-y-4">
-      {/* Dynamic Header Matching Active Sub-Menu */}
-      <div className="border-b border-slate-200 pb-3">
-        <h1 className="text-xl font-bold text-slate-900">
-          {activeTab === 'opname' ? 'Stock Opname Fisik Yard' : 'Audit Chain of Custody'}
-        </h1>
-        <p className="text-xs text-slate-500 mt-0.5">
-          {activeTab === 'opname'
-            ? 'Pindai tiang & material fisik di halaman gudang transit untuk pencocokan otomatis dengan saldo buku inventaris.'
-            : 'Buku besar rantai kepemilikan digital (Append-only ledger, tidak dapat diedit/dihapus) seluruh pergerakan material.'}
-        </p>
+      {/* Tab Bar */}
+      <div className="flex gap-1 bg-slate-100 p-1 rounded-xl w-fit mb-2">
+        {[
+          { id: 'trail', label: 'Audit Trail', icon: History },
+          { id: 'opname', label: 'Stock Opname', icon: Scan },
+          { id: 'stock', label: 'Kartu Stok', icon: Boxes },
+        ].map((tab) => {
+          const Icon = tab.icon;
+          const isActive = activeTab === tab.id;
+          return (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition ${
+                isActive
+                  ? 'bg-white text-blue-700 shadow-sm border border-slate-200'
+                  : 'text-slate-500 hover:text-slate-700'
+              }`}
+            >
+              <Icon className={`w-3.5 h-3.5 ${isActive ? 'text-blue-600' : 'text-slate-400'}`} />
+              {tab.label}
+            </button>
+          );
+        })}
       </div>
 
       {activeTab === 'trail' ? (
@@ -295,7 +318,7 @@ export default function AuditTrail({ defaultTab = 'trail', currentUser = null })
               <select
                 value={actionFilter}
                 onChange={(e) => setActionFilter(e.target.value)}
-                className="px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 cursor-pointer focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                className="px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-500"
               >
                 <option value="">Semua Aksi Mutasi</option>
                 <option value="TAG_ENROLLED">TAG_ENROLLED (Registrasi Identitas)</option>
@@ -316,18 +339,21 @@ export default function AuditTrail({ defaultTab = 'trail', currentUser = null })
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && loadAuditTrail()}
-                  className="w-full pl-9 pr-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 font-medium placeholder:text-slate-400"
+                  className="w-full pl-9 pr-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 font-medium placeholder:text-slate-400"
                 />
               </div>
             </div>
 
-            <button
+            <FlameButton
               onClick={loadAuditTrail}
-              className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs flex items-center gap-1.5 font-bold transition cursor-pointer"
+              height={34}
+              flameColor="blue"
+              showArrow={false}
+              text=""
             >
               <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
               <span>Refresh Ledger</span>
-            </button>
+            </FlameButton>
           </div>
 
           {/* High-Density Data Table */}
@@ -360,7 +386,7 @@ export default function AuditTrail({ defaultTab = 'trail', currentUser = null })
                         <td className="py-2.5 px-3.5 text-center">{getActionBadge(log.action)}</td>
                         <td className="py-2.5 px-3.5">
                           <div className="font-semibold text-slate-900">{log.item?.name}</div>
-                          <div className="text-[10px] text-emerald-700 font-mono font-semibold">{log.tag_epc || 'Batch Non-tag'}</div>
+                          <div className="text-[10px] text-blue-700 font-mono font-semibold">{log.tag_epc || 'Batch Non-tag'}</div>
                         </td>
                         <td className="py-2.5 px-3.5">
                           <div className="font-semibold text-slate-800 flex items-center gap-1.5">
@@ -385,10 +411,10 @@ export default function AuditTrail({ defaultTab = 'trail', currentUser = null })
           <div className="lg:col-span-6 bg-white p-5 rounded-2xl border border-slate-200 shadow-xs space-y-4">
             <div className="flex justify-between items-center border-b border-slate-100 pb-3">
               <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-                <Scan className="w-4 h-4 text-emerald-600" />
+                <Scan className="w-4 h-4 text-blue-600" />
                 Input Bulk-Scan Handheld Reader
               </h2>
-              <span className="text-[10px] font-mono font-bold bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded border border-emerald-200">
+              <span className="text-[10px] font-mono font-bold bg-blue-50 text-blue-700 px-2 py-0.5 rounded border border-blue-200">
                 AUDIT OPNAME
               </span>
             </div>
@@ -425,17 +451,19 @@ export default function AuditTrail({ defaultTab = 'trail', currentUser = null })
                   value={opnameEpcs}
                   onChange={(e) => setOpnameEpcs(e.target.value)}
                   placeholder="E28011606000020410000001&#10;E28011606000020410000002&#10;..."
-                  className="w-full p-3 font-mono border border-slate-300 rounded-xl bg-slate-900 text-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 leading-relaxed text-xs"
+                  className="w-full p-3 font-mono border border-slate-300 rounded-xl bg-slate-900 text-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-500 leading-relaxed text-xs"
                 />
               </div>
 
-              <button
+              <FlameButton
                 type="button"
                 onClick={handleRunOpname}
-                className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold shadow transition cursor-pointer text-xs"
-              >
-                Jalankan Rekonsiliasi Opname Fisik vs Sistem
-              </button>
+                fullWidth
+                height={44}
+                flameColor="blue"
+                showArrow={false}
+                text="Jalankan Rekonsiliasi Opname Fisik vs Sistem"
+              />
             </div>
           </div>
 
@@ -446,7 +474,7 @@ export default function AuditTrail({ defaultTab = 'trail', currentUser = null })
                 <div className="border-b border-slate-100 pb-3 flex justify-between items-center">
                   <h2 className="text-sm font-bold text-slate-900">Hasil Rekonsiliasi Opname</h2>
                   <span className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded ${
-                    opnameResult.missing_count === 0 ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'
+                    opnameResult.missing_count === 0 ? 'bg-blue-100 text-blue-800' : 'bg-rose-100 text-rose-800'
                   }`}>
                     {opnameResult.missing_count === 0 ? '100% MATCH' : 'MISMATCH TERDETEKSI'}
                   </span>
@@ -461,9 +489,9 @@ export default function AuditTrail({ defaultTab = 'trail', currentUser = null })
                     <div className="text-slate-500 font-medium">Fisik Terdeteksi</div>
                     <div className="text-xl font-black text-slate-900 mt-1 font-mono">{opnameResult.total_physically_scanned} <span className="text-xs font-normal">Tag</span></div>
                   </div>
-                  <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-xs">
-                    <div className="text-emerald-700 font-bold">Cocok (Matched)</div>
-                    <div className="text-xl font-black text-emerald-800 mt-1 font-mono">{opnameResult.matched_count} <span className="text-xs font-normal">Tag</span></div>
+                  <div className="p-3 bg-blue-50 border border-blue-200 rounded-xl text-xs">
+                    <div className="text-blue-700 font-bold">Cocok (Matched)</div>
+                    <div className="text-xl font-black text-blue-800 mt-1 font-mono">{opnameResult.matched_count} <span className="text-xs font-normal">Tag</span></div>
                   </div>
                   <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs">
                     <div className="text-rose-700 font-bold">Selisih Hilang (Missing)</div>
@@ -485,22 +513,12 @@ export default function AuditTrail({ defaultTab = 'trail', currentUser = null })
                   </div>
                 )}
                 <div className="pt-2 border-t border-slate-100 flex flex-wrap gap-2 justify-end">
-                  <button
-                    type="button"
-                    onClick={() => setShowOpnamePreviewModal(true)}
-                    className="px-3.5 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 shadow-xs cursor-pointer"
-                  >
-                    <Eye className="w-3.5 h-3.5 text-emerald-400" />
-                    <span>Buka Pratinjau & Aksi Lanjutan</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handlePrintBap}
-                    className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 shadow-xs cursor-pointer"
-                  >
-                    <Printer className="w-3.5 h-3.5" />
-                    <span>Cetak Berita Acara (BAP)</span>
-                  </button>
+                  <FlameButton type="button" onClick={() => setShowOpnamePreviewModal(true)} height={34} flameColor="blue" showArrow={false} text="">
+                    <Eye className="w-3.5 h-3.5" /><span>Buka Pratinjau &amp; Aksi Lanjutan</span>
+                  </FlameButton>
+                  <FlameButton type="button" onClick={handlePrintBap} height={34} flameColor="blue" showArrow={false} text="">
+                    <Printer className="w-3.5 h-3.5" /><span>Cetak Berita Acara (BAP)</span>
+                  </FlameButton>
                 </div>
               </div>
             ) : (
@@ -517,20 +535,20 @@ export default function AuditTrail({ defaultTab = 'trail', currentUser = null })
         <Portal>
           <div className="fixed inset-0 z-[100] bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
           <div className={`bg-white rounded-3xl max-w-5xl w-full max-h-[92vh] overflow-y-auto shadow-2xl border p-6 sm:p-8 space-y-5 animate-in fade-in zoom-in-95 duration-150 ${
-            opnameResult.missing_count === 0 ? 'border-emerald-200' : 'border-rose-200'
+            opnameResult.missing_count === 0 ? 'border-blue-200' : 'border-rose-200'
           }`}>
             {/* Header Modal */}
             <div className={`flex items-start justify-between border-b pb-4 ${
-              opnameResult.missing_count === 0 ? 'border-emerald-100' : 'border-rose-100'
+              opnameResult.missing_count === 0 ? 'border-blue-100' : 'border-rose-100'
             }`}>
               <div className="flex items-center gap-3">
                 <div className={`w-11 h-11 rounded-2xl border flex items-center justify-center font-bold shadow-xs ${
                   opnameResult.missing_count === 0
-                    ? 'bg-emerald-100 border-emerald-300 text-emerald-700'
+                    ? 'bg-blue-100 border-blue-300 text-blue-700'
                     : 'bg-rose-100 border-rose-300 text-rose-700'
                 }`}>
                   {opnameResult.missing_count === 0 ? (
-                    <CheckCircle className="w-6 h-6 text-emerald-600" />
+                    <CheckCircle className="w-6 h-6 text-blue-600" />
                   ) : (
                     <AlertTriangle className="w-6 h-6 text-rose-600" />
                   )}
@@ -539,7 +557,7 @@ export default function AuditTrail({ defaultTab = 'trail', currentUser = null })
                   <div className="flex items-center gap-2">
                     <span className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded-full border ${
                       opnameResult.missing_count === 0
-                        ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                        ? 'bg-blue-100 text-blue-800 border-blue-300'
                         : 'bg-rose-100 text-rose-800 border-rose-300'
                     }`}>
                       {opnameResult.missing_count === 0 ? 'PREVIEW: 100% MATCH' : 'PREVIEW: MISMATCH DETECTED'}
@@ -568,7 +586,7 @@ export default function AuditTrail({ defaultTab = 'trail', currentUser = null })
             {/* Verdict Banner */}
             <div className={`p-4 rounded-2xl border text-xs flex items-center justify-between ${
               opnameResult.missing_count === 0
-                ? 'bg-emerald-50/70 border-emerald-200 text-emerald-900'
+                ? 'bg-blue-50/70 border-blue-200 text-blue-900'
                 : 'bg-rose-50/70 border-rose-200 text-rose-900'
             }`}>
               <div className="space-y-0.5">
@@ -586,7 +604,7 @@ export default function AuditTrail({ defaultTab = 'trail', currentUser = null })
                 </p>
               </div>
               <span className={`text-[11px] font-bold font-mono px-2.5 py-1 rounded-lg ${
-                opnameResult.missing_count === 0 ? 'bg-emerald-200 text-emerald-900' : 'bg-rose-200 text-rose-900'
+                opnameResult.missing_count === 0 ? 'bg-blue-100 text-blue-900' : 'bg-rose-200 text-rose-900'
               }`}>
                 {opnameResult.missing_count === 0 ? '100% MATCH' : `${opnameResult.missing_count} KURANG`}
               </span>
@@ -608,26 +626,26 @@ export default function AuditTrail({ defaultTab = 'trail', currentUser = null })
                 </div>
                 <div className="text-[10px] text-blue-600">Hasil Scan Reader</div>
               </div>
-              <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-3 text-center">
-                <div className="text-[10px] text-emerald-700 font-bold uppercase">Cocok</div>
-                <div className="text-lg font-black text-emerald-700 mt-0.5 font-mono">
+              <div className="bg-blue-50 border border-blue-200 rounded-2xl p-3 text-center">
+                <div className="text-[10px] text-blue-700 font-bold uppercase">Cocok</div>
+                <div className="text-lg font-black text-blue-700 mt-0.5 font-mono">
                   {opnameResult.matched_count}
                 </div>
-                <div className="text-[10px] text-emerald-600">Sesuai Saldo</div>
+                <div className="text-[10px] text-blue-600">Sesuai Saldo</div>
               </div>
               <div className={`border rounded-2xl p-3 text-center ${
-                opnameResult.missing_count === 0 ? 'bg-emerald-50 border-emerald-200' : 'bg-rose-50 border-rose-200'
+                opnameResult.missing_count === 0 ? 'bg-blue-50 border-blue-200' : 'bg-rose-50 border-rose-200'
               }`}>
                 <div className={`text-[10px] font-bold uppercase ${
-                  opnameResult.missing_count === 0 ? 'text-emerald-700' : 'text-rose-700'
+                  opnameResult.missing_count === 0 ? 'text-blue-700' : 'text-rose-700'
                 }`}>Selisih Hilang</div>
                 <div className={`text-lg font-black mt-0.5 font-mono ${
-                  opnameResult.missing_count === 0 ? 'text-emerald-700' : 'text-rose-700'
+                  opnameResult.missing_count === 0 ? 'text-blue-700' : 'text-rose-700'
                 }`}>
                   {opnameResult.missing_count}
                 </div>
                 <div className={`text-[10px] ${
-                  opnameResult.missing_count === 0 ? 'text-emerald-600' : 'text-rose-600'
+                  opnameResult.missing_count === 0 ? 'text-blue-600' : 'text-rose-600'
                 }`}>
                   {opnameResult.missing_count === 0 ? 'Nihil' : 'Belum Terbaca'}
                 </div>
@@ -681,40 +699,52 @@ export default function AuditTrail({ defaultTab = 'trail', currentUser = null })
 
             {/* Pilihan Tindakan & Flow Selanjutnya */}
             <div className="pt-2 border-t border-slate-100 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5">
-              <button
+              <FlameButton
                 type="button"
                 onClick={() => setShowOpnamePreviewModal(false)}
-                className="px-4 py-2.5 bg-white hover:bg-slate-100 border border-slate-300 text-slate-700 rounded-xl text-xs font-bold transition cursor-pointer shadow-2xs"
-              >
-                ↺ Sisir Ulang Yard / Tambah Scan
-              </button>
+                height={38}
+                flameColor="blue"
+                showArrow={false}
+                text="↺ Sisir Ulang Yard / Tambah Scan"
+              />
 
               <div className="flex flex-wrap items-center gap-2">
-                <button
+                <FlameButton
                   type="button"
                   onClick={handlePrintBap}
-                  className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 shadow-md cursor-pointer"
+                  height={38}
+                  flameColor="blue"
+                  showArrow={false}
+                  text=""
                 >
                   <Printer className="w-4 h-4" />
                   <span>Cetak Berita Acara Opname (BAP)</span>
-                </button>
+                </FlameButton>
 
                 {opnameResult.missing_count > 0 && (
-                  <button
+                  <FlameButton
                     type="button"
                     disabled={opnameInvestigating}
                     onClick={handleEscalateOpnameAnomaly}
-                    className="px-4 py-2.5 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 shadow-md cursor-pointer"
+                    height={38}
+                    flameColor="rose"
+                    showArrow={false}
+                    text=""
                   >
                     <AlertTriangle className="w-4 h-4" />
                     <span>{opnameInvestigating ? 'Meneruskan Tiket...' : 'Eskalasi Investigasi ke PM'}</span>
-                  </button>
+                  </FlameButton>
                 )}
               </div>
             </div>
           </div>
         </div>
         </Portal>
+      )}
+
+      {/* Kartu Stok Tab */}
+      {activeTab === 'stock' && (
+        <StockCardTab />
       )}
     </div>
   );

@@ -1,13 +1,13 @@
 # Deployment Docker Ubuntu dan Domain
 
-> **Status:** baseline deployment; hardening production belum sepenuhnya diterapkan pada `docker-compose.yml`. Jangan mengekspos MySQL, port reader, atau WebSocket Edge langsung ke Internet.
+> **Status:** production memakai `docker-compose.production.yml` dengan image immutable, PostgreSQL internal, migration job terpisah, dan secret wajib. Jangan mengekspos PostgreSQL, port reader, atau WebSocket Edge langsung ke Internet.
 
 Panduan Windows development: [`instalasi-docker-windows-cloudflare-dev.md`](instalasi-docker-windows-cloudflare-dev.md). Edge Windows: [`instalasi-edge-bridge-client-windows.md`](instalasi-edge-bridge-client-windows.md).
 
 ## Compose Profiles
 HO menyimpan endpoint WSS cabang pada `gate_devices.edge_ws_url` melalui Device Pairing, bukan mengganti IP reader. Browser menghubungi endpoint dari tiket backend; `VITE_WS_URL` tidak dipakai. Edge cabang wajib `WS_DEVICE_CODE`, TLS proxy, Origin frontend HO. Ikuti [konfigurasi HO dan gudang](instalasi-edge-bridge-client-windows.md#konfigurasi-ho-dan-gudang-wss-per-perangkat), termasuk upgrade tiket v2 dan fallback pilot eksplisit. Compose tidak otomatis membuat domain/proxy cabang.
 
-Satu `docker-compose.yml` menjadi baseline. File override memilih exposure/topologi; jangan membuat empat stack yang isinya bercabang.
+`docker-compose.yml` dipakai untuk development. `docker-compose.production.yml` adalah stack production immutable; file override hanya memilih exposure/topologi OS.
 
 | Target | File override | Akses publik |
 |---|---|---|
@@ -21,12 +21,12 @@ Salin [`.env.deploy.example`](../.env.deploy.example) ke file environment privat
 Contoh:
 
 ```bash
-docker compose --env-file .env.ubuntu-production -f docker-compose.yml -f docker-compose.ubuntu-production.yml up -d --build
+docker compose --env-file .env.ubuntu-production -f docker-compose.production.yml -f docker-compose.ubuntu-production.yml up -d --build
 ```
 
 ## Topologi
 
-- Server pusat: Nginx, frontend static build, Laravel/PHP-FPM, MySQL.
+- Server pusat: Nginx, frontend static build, Laravel/PHP-FPM, PostgreSQL.
 - Edge Bridge: PC/mini-PC per gudang pada LAN reader.
 - Edge mengakses API pusat melalui HTTPS.
 - Browser mengakses Edge hanya melalui LAN/VPN atau reverse proxy WSS terkontrol.
@@ -51,7 +51,6 @@ APP_URL=https://wms.example.com
 DB_DATABASE=mosa_wms
 DB_USERNAME=mosa_user
 DB_PASSWORD=<acak-kuat>
-MYSQL_ROOT_PASSWORD=<acak-kuat-berbeda>
 WS_CONTROL_SECRET=<acak-minimum-32-byte>
 DEVICE_API_TOKEN=<unik-per-device-minimum-32-karakter>
 WS_ALLOWED_ORIGINS=https://wms.example.com
@@ -65,11 +64,9 @@ Generate secret langsung pada mesin administrasi; jangan kirim melalui chat atau
 git clone <repository-url> /var/www/mosa
 cd /var/www/mosa
 cp backend/.env.example backend/.env
-docker compose config
-docker compose up -d --build
-docker compose exec backend php artisan key:generate
-docker compose exec backend php artisan migrate --force
-docker compose exec backend php artisan storage:link
+docker compose --env-file .env.ubuntu-production -f docker-compose.production.yml -f docker-compose.ubuntu-production.yml config
+docker compose --env-file .env.ubuntu-production -f docker-compose.production.yml -f docker-compose.ubuntu-production.yml up -d --build
+docker compose --env-file .env.ubuntu-production -f docker-compose.production.yml -f docker-compose.ubuntu-production.yml exec backend php artisan storage:link
 ```
 
 ### Inisialisasi master data
@@ -92,11 +89,11 @@ Buka hanya:
 
 Jangan buka ke Internet:
 
-- `3306` MySQL.
+- `5432` PostgreSQL.
 - `2077/2079` listener reader.
 - `2078` WebSocket Edge.
 
-Compose saat ini memetakan port tersebut pada host. Sebelum production, hapus mapping MySQL dan Edge dari server pusat atau bind ke interface privat/localhost sesuai topologi. Jangan mengandalkan UFW saja.
+Production Compose tidak memetakan PostgreSQL maupun Edge ke host secara default. Nginx hanya di-bind ke `127.0.0.1:8080`; jangan mengandalkan UFW saja.
 
 ## TLS dan Reverse Proxy
 
@@ -144,12 +141,19 @@ Jangan menaruh password DB di argumen command atau script. Gunakan environment/f
 
 Backup minimum:
 
-1. Dump MySQL konsisten.
+1. Dump PostgreSQL konsisten.
 2. Salin `backend/storage/app/public` bila bukti file dibutuhkan.
 3. Enkripsi backup.
 4. Simpan off-host.
 5. Terapkan retention.
 6. Jalankan restore test berkala pada database terpisah.
+
+Backup dapat dibuat tanpa password di command line:
+
+```bash
+export DB_USERNAME=mosa_user DB_DATABASE=mosa_wms
+COMPOSE_ENV_FILE=.env.ubuntu-production BACKUP_DIR=./backups ./docker/postgres/backup.sh
+```
 
 Contoh restore test harus memeriksa migration status, jumlah record penting, login, serta referensi file. Backup tanpa restore test belum dianggap valid.
 
@@ -158,13 +162,12 @@ Contoh restore test harus memeriksa migration status, jumlah record penting, log
 1. Ambil backup terverifikasi.
 2. Catat image/commit saat ini.
 3. Build dan uji staging.
-4. Jalankan `php artisan migrate --force`.
+4. Tunggu service `migrate` selesai dengan `docker compose ps`.
 5. Smoke test.
 6. Jika gagal, rollback image/code. Rollback migration hanya bila migration tersebut dirancang reversible dan dampak data dipahami.
 
 ## Batas Implementasi
 
-- Compose repo masih memuat credential default dan port internal publik; belum production-safe tanpa override/perubahan.
 - Relay fisik dan CCTV nyata belum tersedia.
 - Edge central tidak dapat menjangkau reader LAN tanpa VPN/routing.
 - HTTPS/WSS belum turnkey pada konfigurasi Nginx repo.

@@ -1,12 +1,10 @@
 # Windows pilot production + Cloudflare Tunnel
 # Run only with real secrets in .env.production:
-# docker compose --env-file .env.production -f docker-compose.yml -f docker-compose.windows-production.yml --profile tunnel up -d --build
+# docker compose --env-file .env.production -f docker-compose.production.yml -f docker-compose.windows-production.yml --profile tunnel up -d --build
 services:
   nginx:
     ports:
       - "127.0.0.1:8080:80"
-  mysql:
-    ports: []
   edge-bridge:
     profiles: [edge]
     ports: []

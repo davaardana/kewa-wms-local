@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { normalizeEpc, normalizeEpcList } from './rfidContract';
 
 const getApiBaseUrl = () => {
   if (import.meta.env.VITE_API_URL) return import.meta.env.VITE_API_URL;
@@ -41,7 +42,7 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
-// Handle response & 401 unauth
+// Handle response & 401 unauth / 403 forbidden / 500 server error
 api.interceptors.response.use(
   (response) => {
     const method = (response.config?.method || '').toUpperCase();
@@ -59,22 +60,52 @@ api.interceptors.response.use(
         window.dispatchEvent(new CustomEvent('mosa-mutation-end'));
       }
     }
-    if (error.response?.status === 401) {
+
+    const status = error.response?.status;
+
+    if (status === 401) {
       localStorage.removeItem('mosa_token');
       localStorage.removeItem('mosa_user');
+      if (typeof window !== 'undefined') window.location.reload();
     }
+
+    if (status === 403) {
+      const msg = error.response?.data?.message || 'Akses ditolak. Anda tidak memiliki izin untuk tindakan ini.';
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('mosa-toast', { detail: { message: msg, type: 'error' } }));
+      }
+    }
+
+    if (status === 404 || status === 405) {
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('mosa-http-error', {
+          detail: { status },
+        }));
+      }
+    }
+
+    if (status >= 500) {
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('mosa-toast', {
+          detail: { message: 'Terjadi kesalahan server. Silakan coba lagi.', type: 'error' }
+        }));
+      }
+    }
+
     return Promise.reject(error);
   }
 );
 
+// ── Auth ──────────────────────────────────────────────────────
 export const authApi = {
-  login: (email, password) => api.post('/auth/login', { email, password }),
-  me: () => api.get('/auth/me'),
-  updateProfile: (data) => api.put('/auth/profile', data),
-  changePassword: (data) => api.put('/auth/password', data),
-  logout: () => api.post('/auth/logout'),
+  login:         (email, password) => api.post('/auth/login', { email, password }),
+  me:            ()                => api.get('/auth/me'),
+  updateProfile: (data)            => api.put('/auth/profile', data),
+  changePassword:(data)            => api.put('/auth/password', data),
+  logout:        ()                => api.post('/auth/logout'),
 };
 
+// ── WebSocket Control Ticket ──────────────────────────────────
 export const wsControlApi = {
   issueTicket: (warehouseId, requestedCommands, deviceId, purpose) => api.post('/ws-control-ticket', {
     warehouse_id: Number(warehouseId),
@@ -84,96 +115,82 @@ export const wsControlApi = {
   }, { silentMutation: true }),
 };
 
+// ── User & Role Management ────────────────────────────────────
 export const userApi = {
-  getUsers: (params) => api.get('/users', { params }),
-  createUser: (data) => api.post('/users', data),
-  updateUser: (id, data) => api.put(`/users/${id}`, data),
-  deleteUser: (id) => api.delete(`/users/${id}`),
-  toggleStatus: (id) => api.patch(`/users/${id}/toggle-status`),
-  getRolesAndPermissions: () => api.get('/roles-permissions'),
-  createRole: (data) => api.post('/roles', data),
-  updateRole: (id, data) => api.put(`/roles/${id}`, data),
-  deleteRole: (id) => api.delete(`/roles/${id}`),
-  toggleRolePermission: (id, module_key, is_allowed) => api.patch(`/roles/${id}/toggle-permission`, { module_key, is_allowed }),
+  getUsers:           (params)                      => api.get('/users', { params }),
+  createUser:         (data)                        => api.post('/users', data),
+  updateUser:         (id, data)                    => api.put(`/users/${id}`, data),
+  deleteUser:         (id)                          => api.delete(`/users/${id}`),
+  toggleStatus:       (id)                          => api.patch(`/users/${id}/toggle-status`),
+  getRolesAndPermissions: ()                        => api.get('/roles-permissions'),
+  createRole:         (data)                        => api.post('/roles', data),
+  updateRole:         (id, data)                    => api.put(`/roles/${id}`, data),
+  deleteRole:         (id)                          => api.delete(`/roles/${id}`),
+  toggleRolePermission:(id, module_key, is_allowed) => api.patch(`/roles/${id}/toggle-permission`, { module_key, is_allowed }),
 };
 
+// ── Master Data (Gudang & Item) ───────────────────────────────
 export const masterApi = {
-  getPrincipals: () => api.get('/principals'),
-  createPrincipal: (data) => api.post('/principals', data),
-  getProjects: () => api.get('/projects'),
-  createProject: (data) => api.post('/projects', data),
-  getWarehouses: () => api.get('/warehouses'),
-  createWarehouse: (data) => api.post('/warehouses', data),
-  updateWarehouse: (id, data) => api.put(`/warehouses/${id}`, data),
-  getItems: () => api.get('/items'),
-  createItem: (data) => api.post('/items', data),
-  getVehicles: () => api.get('/vehicles'),
-  createVehicle: (data) => api.post('/vehicles', data),
+  getWarehouses:   ()              => api.get('/warehouses'),
+  createWarehouse: (data)          => api.post('/warehouses', data),
+  updateWarehouse: (id, data)      => api.put(`/warehouses/${id}`, data),
+  getItems:        ()              => api.get('/items'),
+  createItem:      (data)          => api.post('/items', data),
 };
 
+// ── RFID Tags ─────────────────────────────────────────────────
 export const tagApi = {
-  getTags: (params) => api.get('/tags', { params }),
-  reserveTags: (data) => api.post('/tags/reserve', data),
-  enrollTags: (data) => api.post('/tags/enroll', data),
-  getTag: (epc) => api.get(`/tags/${epc}`),
-  updateStatus: (epc, status, notes) => api.patch(`/tags/${epc}/status`, { status, notes }),
-  deleteTag: (epc) => api.delete(`/tags/${epc}`),
-  reactivateTag: (epc) => api.post(`/tags/${epc}/reactivate`),
-  bulkDeleteTags: (epcs) => api.post('/tags/bulk-delete', { epcs }),
+  getTags:        (params)         => api.get('/tags', { params }),
+  reserveTags:    (data)           => api.post('/tags/reserve', data),
+  enrollTags:     (data)           => api.post('/tags/enroll', {
+    ...data,
+    ...(data.epc ? { epc: normalizeEpc(data.epc) } : {}),
+    ...(data.epc_list ? { epc_list: normalizeEpcList(data.epc_list) } : {}),
+  }),
+  getTag:         (epc)            => api.get(`/tags/${epc}`),
+  updateStatus:   (epc, status, notes) => api.patch(`/tags/${normalizeEpc(epc)}/status`, { status, notes }),
+  deleteTag:      (epc)            => api.delete(`/tags/${normalizeEpc(epc)}`),
+  reactivateTag:  (epc)            => api.post(`/tags/${normalizeEpc(epc)}/reactivate`),
+  bulkDeleteTags: (epcs)           => api.post('/tags/bulk-delete', { epcs: normalizeEpcList(epcs) }),
 };
 
-export const spkApi = {
-  getSpks: (params) => api.get('/spks', { params }),
-  createSpk: (data) => api.post('/spks', data),
-  getSpk: (id) => api.get(`/spks/${id}`),
-  updatePaymentStatus: (id, data) => api.patch(`/spks/${id}/payment-status`, data),
+// ── Shipping Documents (core alur bisnis) ─────────────────────
+// PM: buat, approve, cancel
+// PIC: assign-tags, scan-tag, batch-scan, complete
+export const shippingApi = {
+  getDocuments:    (params)        => api.get('/shipping-documents', { params }),
+  createDocument:  (data)          => api.post('/shipping-documents', data),
+  getDocument:     (id)            => api.get(`/shipping-documents/${id}`),
+  approveDocument: (id)            => api.post(`/shipping-documents/${id}/approve`),
+  assignTags:      (id, tags)      => api.post(`/shipping-documents/${id}/assign-tags`, { tags }),
+  scanTag:         (id, epc)       => api.post(`/shipping-documents/${id}/scan-tag`, { epc: normalizeEpc(epc) }),
+  batchScanTags:   (id, epcs)      => api.post(`/shipping-documents/${id}/batch-scan`, { epcs: normalizeEpcList(epcs) }),
+  completeDocument:(id)            => api.post(`/shipping-documents/${id}/complete`),
+  cancelDocument:  (id)            => api.post(`/shipping-documents/${id}/cancel`),
 };
 
-export const deliveryApi = {
-  getDeliveries: (params) => api.get('/deliveries', { params }),
-  recordDispatchScan: (data) => api.post('/deliveries/dispatch-scan', data),
-  recordReceivingScan: (id, data) => api.post(`/deliveries/${id}/receiving-scan`, data),
-  approveDelivery: (id) => api.post(`/deliveries/${id}/approve`),
-};
-
-export const workOrderApi = {
-  getWorkOrders: (params) => api.get('/work-orders', { params }),
-  createWorkOrder: (data) => api.post('/work-orders', data),
-  getWorkOrder: (id) => api.get(`/work-orders/${id}`),
-  approveWorkOrder: (id) => api.post(`/work-orders/${id}/approve`),
-  reportPrepared: (id, preparedItems, notes) => api.post(`/work-orders/${id}/report-prepared`, { prepared_items: preparedItems, notes }),
-  reportInstalled: (id, data) => api.patch(`/work-orders/${id}/report-installed`, data),
-};
-
+// ── Gate Monitor (Live Feed & Event Logs) ─────────────────────
 export const gateApi = {
-  getTransactions: (params) => api.get('/gate/transactions', { params }),
-  requestGateSession: (data) => api.post('/gate/transactions', data),
-  approveTransaction: (id) => api.post(`/gate/transactions/${id}/approve`),
-  rejectTransaction: (id, rejection_reason) => api.post(`/gate/transactions/${id}/reject`, { rejection_reason }),
-  cancelTransaction: (id, reason) => api.post(`/gate/transactions/${id}/cancel`, { reason }),
-  finalizePartial: (id, notes) => api.post(`/gate/transactions/${id}/finalize-partial`, { notes }),
-  adjustItems: (id, items) => api.post(`/gate/transactions/${id}/adjust-items`, { items }),
-  getLiveFeed: (warehouseId) => api.get('/gate/live-feed', { params: { warehouse_id: warehouseId } }),
-  triggerGateEvent: (data) => api.post('/gate/event', data),
-  deleteEvent: (id) => api.delete(`/gate/events/${id}`),
-  clearHistory: (warehouseId) => api.delete('/gate/events', { params: { warehouse_id: warehouseId }, data: { warehouse_id: warehouseId } }),
+  getLiveFeed:       (warehouseId)   => api.get('/gate/live-feed', { params: { warehouse_id: warehouseId } }),
+  triggerGateEvent:  (payload)       => api.post('/gate/event', payload),
+  deleteEvent:       (id)            => api.delete(`/gate/events/${id}`),
+  clearHistory:      (warehouseId)   => api.delete('/gate/events', { params: { warehouse_id: warehouseId }, data: { warehouse_id: warehouseId } }),
 };
 
-export const returnApi = {
-  requestReturn: (data) => api.post('/returns/request', data),
-  verifyReturn: (txId, data) => api.post(`/returns/${txId}/verify`, data),
+// ── Device Management ─────────────────────────────────────────
+export const devicesApi = {
+  getDevices:      (params)        => api.get('/devices', { params }),
+  pairDevice:      (data)          => api.post('/devices', data),
+  updateDevice:    (id, data)      => api.put(`/devices/${id}`, data),
+  deleteDevice:    (id)            => api.delete(`/devices/${id}`),
+  testConnection:  (data)          => api.post('/devices/test-connection', data),
+  getStatus:       ()              => api.get('/devices/status'),
+  sendHeartbeat:   (data)          => api.post('/devices/heartbeat', data),
 };
 
-export const reportApi = {
-  getStocks: (params) => api.get('/reports/stocks', { params }),
-  getStockCard: (params) => api.get('/reports/stock-card', { params }),
-  getAuditTrail: (params) => api.get('/reports/audit-trail', { params }),
-  getDashboardKpis: () => api.get('/reports/dashboard-kpis'),
-  reconcileStockOpname: (warehouseId, scannedEpcs) => api.post('/reports/stock-opname', { warehouse_id: warehouseId, scanned_epcs: scannedEpcs }),
-};
-
+// ── File Upload ───────────────────────────────────────────────
 export const uploadApi = {
-  uploadFile: (file, folder = 'delivery_proofs') => {
+  uploadFile: (file, folder = 'shipping_docs') => {
     const formData = new FormData();
     formData.append('file', file);
     formData.append('folder', folder);
@@ -181,27 +198,13 @@ export const uploadApi = {
   },
 };
 
-export const approvalApi = {
-  getRequests: (params) => api.get('/approvals', { params }),
-  getRequest: (id) => api.get(`/approvals/${id}`),
-  processAction: (id, data) => api.post(`/approvals/${id}/action`, data),
-  getTemplates: () => api.get('/approval-templates'),
-  createTemplate: (data) => api.post('/approval-templates', data),
-  updateTemplate: (id, data) => api.put(`/approval-templates/${id}`, data),
-  deleteTemplate: (id) => api.delete(`/approval-templates/${id}`),
-  getConfigs: () => api.get('/approval-configs'),
-  saveConfig: (data) => api.post('/approval-configs', data),
-  deleteConfig: (id) => api.delete(`/approval-configs/${id}`),
-};
-
-export const devicesApi = {
-  getDevices: (params) => api.get('/devices', { params }),
-  pairDevice: (data) => api.post('/devices', data),
-  updateDevice: (id, data) => api.put(`/devices/${id}`, data),
-  deleteDevice: (id) => api.delete(`/devices/${id}`),
-  testConnection: (data) => api.post('/devices/test-connection', data),
-  getStatus: () => api.get('/devices/status'),
-  sendHeartbeat: (data) => api.post('/devices/heartbeat', data),
+// ── Reports & Audit Trail ─────────────────────────────────────
+export const reportApi = {
+  getStocks:           (params)              => api.get('/reports/stocks', { params }),
+  getStockCard:        (params)              => api.get('/reports/stock-card', { params }),
+  getAuditTrail:       (params)              => api.get('/reports/audit-trail', { params }),
+  getDashboardKpis:    ()                    => api.get('/reports/dashboard-kpis'),
+  reconcileStockOpname:(warehouseId, epcs)  => api.post('/reports/stock-opname', { warehouse_id: warehouseId, scanned_epcs: epcs }),
 };
 
 export default api;

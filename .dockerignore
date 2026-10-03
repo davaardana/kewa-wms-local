@@ -1,0 +1,17 @@
+.git
+.env
+.env.*
+!.env.example
+!.env.deploy.example
+
+**/node_modules
+**/vendor
+**/dist
+**/storage/logs
+**/storage/framework/cache
+**/storage/framework/sessions
+**/storage/framework/views
+edge-bridge/offline_buffer.json
+edge-bridge/snapshots/*
+frontend/.vite
+frontend/coverage

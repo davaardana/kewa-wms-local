@@ -65,21 +65,6 @@ class Warehouse extends Model
         return $this->hasMany(RfidTag::class, 'last_warehouse_id');
     }
 
-    public function deliveries(): HasMany
-    {
-        return $this->hasMany(Delivery::class);
-    }
-
-    public function workOrders(): HasMany
-    {
-        return $this->hasMany(WorkOrder::class);
-    }
-
-    public function gateTransactions(): HasMany
-    {
-        return $this->hasMany(GateTransaction::class);
-    }
-
     public function devices(): HasMany
     {
         return $this->hasMany(GateDevice::class);

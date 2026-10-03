@@ -3,17 +3,16 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Http\Controllers\Api\ShippingDocumentController;
 use App\Models\GatePassEvent;
 use App\Services\GateEngineService;
-use App\Services\WhatsAppNotificationService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
 class GateEventController extends Controller
 {
     public function __construct(
-        protected GateEngineService $gateEngine,
-        protected WhatsAppNotificationService $waService
+        protected GateEngineService $gateEngine
     ) {}
 
     /**
@@ -24,36 +23,44 @@ class GateEventController extends Controller
         $device = $request->attributes->get('gate_device');
         $request->merge([
             'warehouse_id' => $device->warehouse_id,
-            'gate_id' => $device->device_code,
-            'raw_payload' => [
+            'gate_id'      => $device->device_code,
+            'epc_list'     => collect($request->input('epc_list', []))
+                ->map(fn ($epc) => strtoupper(trim($epc)))
+                ->values()
+                ->all(),
+            'raw_payload'  => [
                 ...$request->input('raw_payload', []),
                 'device' => $device->device_code,
             ],
         ]);
 
         $validated = $request->validate([
-            'event_id' => 'required|uuid',
-            'observed_at' => 'required|date|before_or_equal:now',
-            'warehouse_id' => 'required|exists:warehouses,id',
-            'gate_id' => 'nullable|string|max:50',
-            'antenna_sequence' => 'required|in:A_TO_B,B_TO_A,SINGLE_ANTENNA',
-            'direction' => 'nullable|in:OUT,IN',
-            'epc_list' => 'required|array|min:1|max:100',
-            'epc_list.*' => 'string|max:255',
-            'cctv_snapshot_path' => 'nullable|string',
-            'gate_transaction_id' => 'nullable|exists:gate_transactions,id',
-            'raw_payload' => 'nullable|array',
+            'event_id'             => 'required|uuid',
+            'observed_at'          => 'required|date|before_or_equal:now',
+            'warehouse_id'         => 'required|exists:warehouses,id',
+            'gate_id'              => 'nullable|string|max:50',
+            'antenna_sequence'     => 'required|in:A_TO_B,B_TO_A,SINGLE_ANTENNA',
+            'direction'            => 'nullable|in:OUT,IN',
+            'epc_list'             => 'required|array|min:1|max:100',
+            'epc_list.*'           => ['string', 'min:8', 'max:64', 'regex:/^[0-9A-Fa-f]+$/'],
+            'cctv_snapshot_path'   => 'nullable|string',
+            'shipping_document_id' => 'nullable|exists:shipping_documents,id',
+            'raw_payload'          => 'nullable|array',
         ]);
 
+        // Primary gate processing via GateEngineService
         $result = $this->gateEngine->processGateEvent($validated, $device);
 
-        // If security mismatch occurred, notify PM immediately
-        if (!empty($result['mismatch']) && !empty($result['pass_event_id'])) {
-            $passEvent = GatePassEvent::with('warehouse')->find($result['pass_event_id']);
-            if ($passEvent) {
-                $this->waService->notifySecurityMismatch($passEvent);
-            }
-        }
+        // Also update ShippingDocumentTag.status='scanned' for doc progress tracking
+        $direction = $validated['direction']
+            ?? ($validated['antenna_sequence'] === 'A_TO_B' ? 'OUT' : 'IN');
+
+        $shippingMatch = ShippingDocumentController::matchGateEpcs(
+            $validated['warehouse_id'],
+            $validated['epc_list'],
+            $direction
+        );
+        $result['shipping_match'] = $shippingMatch;
 
         return response()->json($result);
     }
@@ -65,7 +72,10 @@ class GateEventController extends Controller
     {
         $warehouseId = $request->query('warehouse_id');
 
-        $query = GatePassEvent::with(['warehouse', 'gateTransaction.pic', 'gateTransaction.workOrder']);
+        $query = GatePassEvent::with([
+            'warehouse:id,name,code',
+            'shippingDocument:id,document_number,type,status',
+        ]);
 
         if ($warehouseId && $warehouseId !== 'ALL') {
             $query->where('warehouse_id', $warehouseId);
@@ -77,7 +87,7 @@ class GateEventController extends Controller
     }
 
     /**
-     * Real-time Server-Sent Events (SSE) Push Stream for Gate Portal & Web UI
+     * Real-time Server-Sent Events (SSE) Push Stream for Gate Portal & Web UI.
      */
     public function stream(Request $request)
     {
@@ -85,15 +95,17 @@ class GateEventController extends Controller
 
         return response()->stream(function () use ($warehouseId) {
             $lastId = null;
-            $start = time();
+            $start  = time();
 
-            // Advise SSE clients to wait 10s before reconnecting
             echo "retry: 10000\n\n";
             if (ob_get_level() > 0) ob_flush();
             flush();
 
             // Initial burst of recent events
-            $initQuery = GatePassEvent::with(['warehouse', 'gateTransaction.pic', 'gateTransaction.workOrder']);
+            $initQuery = GatePassEvent::with([
+                'warehouse:id,name,code',
+                'shippingDocument:id,document_number,type,status',
+            ]);
             if ($warehouseId && $warehouseId !== 'ALL') {
                 $initQuery->where('warehouse_id', $warehouseId);
             }
@@ -111,7 +123,10 @@ class GateEventController extends Controller
                     break;
                 }
 
-                $query = GatePassEvent::with(['warehouse', 'gateTransaction.pic', 'gateTransaction.workOrder']);
+                $query = GatePassEvent::with([
+                    'warehouse:id,name,code',
+                    'shippingDocument:id,document_number,type,status',
+                ]);
                 if ($warehouseId && $warehouseId !== 'ALL') {
                     $query->where('warehouse_id', $warehouseId);
                 }
@@ -134,23 +149,22 @@ class GateEventController extends Controller
                 if (ob_get_level() > 0) ob_flush();
                 flush();
 
-                usleep(1500000); // 1.5s push cycle (friendly to DB & worker pool)
+                usleep(1500000); // 1.5s push cycle
 
-                // Auto-close after 10s to release worker promptly
                 if (time() - $start >= 10) {
                     break;
                 }
             }
         }, 200, [
-            'Content-Type' => 'text/event-stream',
-            'Cache-Control' => 'no-cache, no-transform',
-            'Connection' => 'keep-alive',
+            'Content-Type'      => 'text/event-stream',
+            'Cache-Control'     => 'no-cache, no-transform',
+            'Connection'        => 'keep-alive',
             'X-Accel-Buffering' => 'no',
         ]);
     }
 
     /**
-     * Gate events are immutable operational evidence.
+     * Gate events are immutable operational evidence — not deletable.
      */
     public function destroy(Request $request, int $id): JsonResponse
     {
@@ -161,14 +175,15 @@ class GateEventController extends Controller
     }
 
     /**
-     * Clear / bulk delete gate pass event logs (optionally filtered by warehouse).
+     * Gate history is immutable — clearing not allowed.
      */
     public function clearHistory(Request $request): JsonResponse
     {
         return response()->json([
-            'success' => false,
-            'message' => 'Riwayat gerbang adalah bukti audit dan tidak dapat dibersihkan.',
+            'success'       => false,
+            'message'       => 'Riwayat gerbang adalah bukti audit dan tidak dapat dibersihkan.',
             'deleted_count' => 0,
         ], 405);
     }
 }
+

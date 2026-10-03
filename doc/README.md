@@ -1,51 +1,54 @@
 # Dokumentasi MOSA WMS RFID
 
-Indeks dokumentasi. Status mengikuti implementasi aktual, bukan target desain.
+Indeks dokumentasi sistem. Status mengikuti implementasi aktual kode, bukan target desain.
 
-## Source of truth
+---
 
-| Informasi | Dokumen kanonik |
-|---|---|
-| Scope dan status produk | [`prd.md`](prd.md) |
-| Invariants dan enforcement | [`rules.md`](rules.md) |
-| Kontrak REST API | [`api-spec.md`](api-spec.md) + routes/controllers |
-| Skema database | [`schema.md`](schema.md) + migrations |
-| Batas arsitektur dan topologi | [`arsitektur.md`](arsitektur.md) |
-| SOP operator | [`penggunaan.md`](penggunaan.md) |
-| Runtime Edge | [`../edge-bridge/README.md`](../edge-bridge/README.md) |
-| Edge Windows | [`instalasi-edge-bridge-client-windows.md`](instalasi-edge-bridge-client-windows.md) |
-| Hardware/RF | [`instalasi-hardware-reader.md`](instalasi-hardware-reader.md) |
-| Deployment Ubuntu/domain | [`instalasi-docker-dan-domain.md`](instalasi-docker-dan-domain.md) |
-| Development Windows/tunnel | [`instalasi-docker-windows-cloudflare-dev.md`](instalasi-docker-windows-cloudflare-dev.md) |
-| Command presentasi Windows | [`command-docker-presentasi-windows.md`](command-docker-presentasi-windows.md) |
-| Backlog hardening | [`../RENCANA_HARDENING_FASE_2.md`](../RENCANA_HARDENING_FASE_2.md) |
+## Panduan Utama
 
-## Dokumen aktif
+| Dokumen | Isi |
+|:--------|:----|
+| [`cara-penggunaan.md`](cara-penggunaan.md) | Panduan lengkap alur & tombol per role |
+| [`alur-sistem.md`](alur-sistem.md) | Alur material, state machine, keputusan gate |
+| [`roles-permissions.md`](roles-permissions.md) | Matriks hak akses per role (SA/PM/PIC) |
+| [`struktur-kode.md`](struktur-kode.md) | Struktur folder backend, frontend, edge |
 
-- [`prd.md`](prd.md) — kebutuhan produk dan status implementasi.
-- [`arsitektur.md`](arsitektur.md) — komponen, trust boundary, alur, deployment, gap.
-- [`api-spec.md`](api-spec.md) — seluruh route aktif, disabled, akses, side effect.
-- [`schema.md`](schema.md) — ringkasan migration, FK, index, risiko data.
-- [`rules.md`](rules.md) — aturan bisnis dengan label enforcement.
-- [`penggunaan.md`](penggunaan.md) — SOP operator; bukan panduan developer/seeder.
-- [`keamanan-rfid-anti-clone.md`](keamanan-rfid-anti-clone.md) — proposal, belum implementasi.
+## Referensi Teknis
 
-## Deployment dan hardware
+| Dokumen | Isi |
+|:--------|:----|
+| [`arsitektur.md`](arsitektur.md) | Komponen, topologi, trust boundary |
+| [`schema.md`](schema.md) | Skema database & ERD |
+| [`api-spec.md`](api-spec.md) | Kontrak REST API lengkap |
+| [`rules.md`](rules.md) | Aturan bisnis dengan label enforcement |
+| [`prd.md`](prd.md) | PRD & status fitur implementasi |
 
-- [`instalasi-docker-dan-domain.md`](instalasi-docker-dan-domain.md) — baseline Ubuntu; hardening production masih diperlukan.
-- [`instalasi-docker-windows-cloudflare-dev.md`](instalasi-docker-windows-cloudflare-dev.md) — development-only.
-- [`command-docker-presentasi-windows.md`](command-docker-presentasi-windows.md) — command operasional presentasi Windows, Adminer, database, dan tunnel.
-- [`instalasi-edge-bridge-client-windows.md`](instalasi-edge-bridge-client-windows.md) — pilot Edge Windows; acceptance service masih diperlukan.
-- [`instalasi-hardware-reader.md`](instalasi-hardware-reader.md) — wiring, RF, dan commissioning.
-- [`contoh-pemasangan-tag.md`](contoh-pemasangan-tag.md) — metode dan ilustrasi pemasangan tag RFID pada tiang besi bulat.
+## Instalasi & Deployment
 
-## Arsip dan komersial
+| Dokumen | Isi |
+|:--------|:----|
+| [`instalasi-docker-dan-domain.md`](instalasi-docker-dan-domain.md) | Deploy production Ubuntu + domain |
+| [`instalasi-docker-windows-cloudflare-dev.md`](instalasi-docker-windows-cloudflare-dev.md) | Development Windows + tunnel |
+| [`instalasi-edge-bridge-client-windows.md`](instalasi-edge-bridge-client-windows.md) | Edge Bridge di PC gudang Windows |
+| [`instalasi-hardware-reader.md`](instalasi-hardware-reader.md) | Setup & wiring reader RFID UHF |
+| [`contoh-pemasangan-tag.md`](contoh-pemasangan-tag.md) | Pemasangan tag di material tiang |
+| [`command-docker-presentasi-windows.md`](command-docker-presentasi-windows.md) | Command operasional presentasi |
 
-- [`archive/requirements-initial.md`](archive/requirements-initial.md) — requirement discovery awal; superseded.
-- [`commercial/estimasi-valuasi-proyek.md`](commercial/estimasi-valuasi-proyek.md) — estimasi internal; bukan source teknis.
+---
 
-## Aturan penggunaan
+## Source of Truth
 
-- Kode, migration, routes, dan controller mengalahkan klaim lama pada Markdown.
-- Label `PARTIAL`, `PLANNED`, dan `KNOWN ISSUE` tidak boleh dipromosikan menjadi `IMPLEMENTED` tanpa bukti test/commissioning.
-- Perubahan kontrak API, schema, arsitektur, gate, atau alur bisnis wajib memperbarui dokumen terkait pada turn yang sama.
+Kode aktual mengalahkan dokumentasi lama:
+
+- API → `backend/routes/api.php` + controllers
+- Schema → `backend/database/migrations/`
+- Business logic → services, models, policies, tests
+- Edge runtime → `edge-bridge/src/`
+- Deployment → `docker-compose.yml`, `docker/nginx/default.conf`
+
+## Aturan Penggunaan Dokumen
+
+1. Kode mengalahkan Markdown — selalu cek source sebelum percaya dokumen.
+2. Label `PARTIAL`, `PLANNED`, `KNOWN ISSUE` tidak boleh dipromosikan ke `IMPLEMENTED` tanpa bukti test/commissioning.
+3. Perubahan kontrak API, schema, arsitektur, gate, atau alur bisnis wajib update dokumen terkait pada turn yang sama.
+4. Bugfix lokal, CSS, refactor internal tanpa perubahan kontrak tidak wajib update dokumen.

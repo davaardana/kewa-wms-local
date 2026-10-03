@@ -1,13 +1,22 @@
 # MOSA WMS RFID — Skema Database
 
-> Snapshot migration: 14 September 2026. Source of truth: [`backend/database/migrations`](../backend/database/migrations). Dokumen ini merangkum skema efektif; aturan bisnis yang hanya dijaga controller/service tidak dianggap constraint DB.
+> Snapshot migration: 1 Oktober 2026. Source of truth: [`backend/database/migrations`](../backend/database/migrations). Dokumen ini merangkum skema efektif; aturan bisnis yang hanya dijaga controller/service tidak dianggap constraint DB. Database: **PostgreSQL 15**.
 
 ## Ringkasan
 
-- 29 tabel domain, 10 tabel framework/infrastruktur.
-- Status/domain value umumnya `VARCHAR`; tidak ada DB `CHECK` untuk sebagian besar enum bisnis.
+- 30 tabel domain, 10 tabel framework/infrastruktur.
+- Database: PostgreSQL 15. Status/domain value umumnya `VARCHAR`; tidak ada DB `CHECK` untuk sebagian besar enum bisnis.
 - Kolom kuantitas/nominal umumnya belum memiliki `CHECK >= 0`.
 - Timestamp standar `created_at/updated_at`, kecuali `custody_ledger` hanya `created_at`.
+
+## Tabel Tambahan — Dokumen Barang
+
+| Tabel | Kolom penting | Keterangan |
+|:------|:--------------|:-----------|
+| `shipping_documents` | type (inbound/outbound), warehouse_id, status, notes, attachments (JSONB), created_by | Dokumen penerimaan/pengiriman barang. `attachments` menyimpan array path file lampiran. |
+| `shipping_document_items` | document_id, item_id, expected_qty | Item material dalam dokumen. |
+| `shipping_document_tags` | document_item_id, tag_epc, assigned_by, assigned_at | Tag RFID yang di-assign ke item dokumen. |
+
 
 ## ERD Domain Inti
 

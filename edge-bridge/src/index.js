@@ -40,7 +40,7 @@ class GateBridgeApp {
     this.usedWsTicketIds = new Map();
     this.assignedAntenna = config.assignedAntenna || process.env.ASSIGNED_ANTENNA || null; // 'A' | 'B' | null (auto)
     this.gateMode = config.gateMode || process.env.GATE_MODE || null;
-    this.authorizedTransaction = null;
+    this.authorizedDocument = null;
     this.batchIdleMs = config.batchIdleMs || parseInt(process.env.BATCH_IDLE_MS || '2500', 10);
     this.batchDeadlineMs = config.batchDeadlineMs || parseInt(process.env.BATCH_DEADLINE_MS || '5000', 10);
     this.maxBatchSize = config.maxBatchSize || parseInt(process.env.MAX_BATCH_SIZE || '100', 10);
@@ -212,11 +212,11 @@ class GateBridgeApp {
     const mode = config?.device?.warehouse?.gate_mode;
     if (!['DUAL_ANTENNA_AUTO', 'SINGLE_ANTENNA_SESSION'].includes(mode)) {
       this.gateMode = null;
-      this.authorizedTransaction = null;
+      this.authorizedDocument = null;
       return false;
     }
     this.gateMode = mode;
-    this.authorizedTransaction = config.authorized_transaction || null;
+    this.authorizedDocument = config.authorized_document || null;
     return true;
   }
 
@@ -800,8 +800,8 @@ class GateBridgeApp {
       }
 
       this._accumulateBatch(result.epc, result.direction === 'B_TO_A' ? 'IN' : 'OUT', rssi);
-    } else if (this.gateMode === 'SINGLE_ANTENNA_SESSION' && this.authorizedTransaction) {
-      this._accumulateBatch(epc, this.authorizedTransaction.type === 'OUT_FULFILLMENT' ? 'OUT' : 'IN', rssi);
+    } else if (this.gateMode === 'SINGLE_ANTENNA_SESSION' && this.authorizedDocument) {
+      this._accumulateBatch(epc, this.authorizedDocument.type === 'outbound' ? 'OUT' : 'IN', rssi);
     }
   }
 
@@ -913,7 +913,7 @@ class GateBridgeApp {
     console.log(`\n🚀 [GATE EVENT TRIGGER] Dispatching ${tagsArray.length} tags (Direction: ${direction}, Mode: Single/Dual Reader)`);
 
     // R-09: gate config is now synced in background every 10s — no need to await here
-    if (!this.gateMode || (this.gateMode === 'SINGLE_ANTENNA_SESSION' && !this.authorizedTransaction)) {
+    if (!this.gateMode || (this.gateMode === 'SINGLE_ANTENNA_SESSION' && !this.authorizedDocument)) {
       const failReason = !this.gateMode ? 'No gate mode configured' : 'No authorized transaction session';
       console.warn(`🚨 [GATE FAIL-CLOSED] ${failReason}; event not authorized.`);
       this.relay.lock();
@@ -923,7 +923,7 @@ class GateBridgeApp {
     }
 
     const snapshotPath = this.cctv.capture(this.gateId, direction);
-    const transactionId = this.authorizedTransaction?.id || null;
+    const shippingDocumentId = this.authorizedDocument?.id || null;
     const antennaSequence = this.gateMode === 'DUAL_ANTENNA_AUTO'
       ? (direction === 'OUT' ? 'A_TO_B' : 'B_TO_A')
       : 'SINGLE_ANTENNA';
@@ -937,7 +937,7 @@ class GateBridgeApp {
       antenna_sequence: antennaSequence,
       epc_list: tagsArray,
       cctv_snapshot_path: snapshotPath,
-      gate_transaction_id: transactionId,
+      shipping_document_id: shippingDocumentId,
       raw_payload: {
         timestamp: observedAt,
         total_tags: tagsArray.length,
@@ -957,7 +957,7 @@ class GateBridgeApp {
       warehouse_id: this.warehouseId,
       tag_count: tagsArray.length,
       epc_list: tagsArray.map(t => t.epc),
-      transaction_id: transactionId,
+      shipping_document_id: shippingDocumentId,
       unlock: response?.unlock_gate || false,
     });
 

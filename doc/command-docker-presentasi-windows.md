@@ -1,6 +1,6 @@
 # Command Docker Presentasi Windows
 
-Panduan menjalankan MOSA WMS, MySQL berisi data awal, Adminer, dan Cloudflare Tunnel pada Windows.
+Panduan menjalankan MOSA WMS, PostgreSQL berisi data awal, Adminer, dan Cloudflare Tunnel pada Windows.
 
 ## Prasyarat
 
@@ -17,10 +17,13 @@ Set-Location C:\Code\WMS\Mosaik-WMS
 
 ## 1. Menjalankan pertama kali
 
-Command ini build image, menjalankan MySQL, migrasi, seeder data awal, Adminer, dan Cloudflare Tunnel:
+Command ini build image, menjalankan PostgreSQL, Adminer, dan Cloudflare Tunnel:
 
 ```powershell
 docker compose -f docker-compose.yml -f docker-compose.windows-dev.yml -f docker-compose.windows-dev-no-edge.yml --profile tunnel --profile adminer up -d --build --wait
+
+docker compose exec backend php artisan migrate --force
+docker compose exec backend php artisan db:seed --force
 ```
 
 Build Composer pertama dapat memerlukan beberapa menit. Jangan dibatalkan selama output masih bergerak. Jangan gunakan `--no-cache` untuk penggunaan normal.
@@ -48,7 +51,7 @@ docker compose -f docker-compose.yml -f docker-compose.windows-dev.yml -f docker
 Target:
 
 - `backend`: `healthy`
-- `mysql`: `healthy`
+- `postgres`: `healthy`
 - `nginx`: `Up`
 - `frontend`: `Up`
 - `cloudflared`: `Up`
@@ -89,8 +92,8 @@ Tekan `Ctrl+C` untuk berhenti memantau. Container tetap berjalan.
 ### Adminer
 
 - URL: `http://127.0.0.1:8081`
-- System: `MySQL`
-- Server: `mysql`
+- System: `PostgreSQL`
+- Server: `postgres`
 - Username: `mosa_user`
 - Password: nilai `DB_PASSWORD` pada `.env`; default development `mosa_dev_password`
 - Database: `mosa_wms`
@@ -129,10 +132,10 @@ Jangan memakai `docker compose down -v`; opsi `-v` menghapus volume database.
 
 ## 10. Backup database
 
-Sesuaikan password root bila `MYSQL_ROOT_PASSWORD` pada `.env` berbeda:
+Gunakan password PostgreSQL dari `DB_PASSWORD` pada `.env`:
 
 ```powershell
-docker compose exec -T mysql mysqldump -u root -pmosa_dev_root_password mosa_wms > mosa_wms_backup.sql
+docker compose exec -T postgres pg_dump -U mosa_user -d mosa_wms -Fc > mosa_wms_backup.dump
 ```
 
 ## 11. Restore database
@@ -140,7 +143,7 @@ docker compose exec -T mysql mysqldump -u root -pmosa_dev_root_password mosa_wms
 Backup database sebelum restore. Restore dapat menimpa record dengan primary key sama.
 
 ```powershell
-Get-Content .\mosa_wms_backup.sql -Raw | docker compose exec -T mysql mysql -u root -pmosa_dev_root_password mosa_wms
+Get-Content .\mosa_wms_backup.dump -Raw -Encoding Byte | docker compose exec -T postgres pg_restore -U mosa_user -d mosa_wms --clean --if-exists
 ```
 
 ## Troubleshooting singkat

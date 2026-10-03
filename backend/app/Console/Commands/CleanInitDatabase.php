@@ -2,26 +2,14 @@
 
 namespace App\Console\Commands;
 
-use App\Models\ApprovalHistory;
-use App\Models\ApprovalRequest;
-use App\Models\BoqItem;
 use App\Models\CustodyLedger;
-use App\Models\Delivery;
-use App\Models\DeliveryItem;
 use App\Models\DeviceHealthIncident;
 use App\Models\GateDevice;
 use App\Models\GatePassEvent;
-use App\Models\GateTransaction;
-use App\Models\GateTransactionItem;
 use App\Models\Item;
-use App\Models\Principal;
 use App\Models\Project;
 use App\Models\RfidTag;
-use App\Models\Spk;
-use App\Models\SpkItem;
-use App\Models\Vehicle;
 use App\Models\Warehouse;
-use App\Models\WorkOrder;
 use App\Models\User;
 use Database\Seeders\DevelopmentSeeder;
 use Database\Seeders\LaunchSeeder;
@@ -44,7 +32,7 @@ class CleanInitDatabase extends Command
                             {--prepared : Alias untuk --staging-ready} 
                             {--staging : Alias untuk --staging-ready} 
                             {--launch : Pure production launch master data only (No dummy transactions)} 
-                            {--master-only : Setup User, Principal, Gudang & Katalog Barang (operasional kosong)} 
+                            {--master-only : Setup User, Gudang & Katalog Barang (operasional kosong)} 
                             {--only-users : Empty ALL master data and transactions, keeping only users & system roles}
                             {--force : Force execution without confirmation}';
 
@@ -85,16 +73,6 @@ class CleanInitDatabase extends Command
         // 1. Truncate Transactional Tables
         CustodyLedger::truncate();
         GatePassEvent::truncate();
-        GateTransactionItem::truncate();
-        GateTransaction::truncate();
-        ApprovalHistory::truncate();
-        ApprovalRequest::truncate();
-        DeliveryItem::truncate();
-        Delivery::truncate();
-        BoqItem::truncate();
-        WorkOrder::truncate();
-        SpkItem::truncate();
-        Spk::truncate();
         RfidTag::truncate();
         DeviceHealthIncident::truncate();
         GateDevice::truncate();
@@ -109,8 +87,6 @@ class CleanInitDatabase extends Command
             DB::table('warehouse_staff')->truncate();
             Warehouse::truncate();
             Project::truncate();
-            Principal::truncate();
-            Vehicle::truncate();
             Item::truncate();
 
             Schema::enableForeignKeyConstraints();

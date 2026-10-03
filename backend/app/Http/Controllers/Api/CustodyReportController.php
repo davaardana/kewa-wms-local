@@ -3,13 +3,11 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
-use App\Models\BoqItem;
 use App\Models\CustodyLedger;
+use App\Models\ShippingDocument;
 use App\Models\GatePassEvent;
-use App\Models\GateTransaction;
 use App\Models\Item;
 use App\Models\RfidTag;
-use App\Models\WorkOrder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -196,47 +194,43 @@ class CustodyReportController extends Controller
      */
     public function dashboardKpis(Request $request): JsonResponse
     {
-        $totalTags = RfidTag::count();
-        $activeTags = RfidTag::where('status', 'active')->count();
-        $totalItems = Item::count();
-        $activeWorkOrders = WorkOrder::whereIn('status', ['approved', 'in_progress'])->count();
-        
-        // Multi-tier pending approvals
-        $pendingApprovals = \App\Models\ApprovalRequest::where('status', 'pending')->count();
-        if ($pendingApprovals === 0) {
-            $pendingApprovals = GateTransaction::where('status', 'pending_approval')->count();
-        }
+        $totalTags         = RfidTag::count();
+        $activeTags        = RfidTag::where('status', 'active')->count();
+        $totalItems        = Item::count();
+        $activeShippingDocs = ShippingDocument::whereIn('status', ['approved', 'in_progress'])->count();
+        $draftDocs         = ShippingDocument::where('status', 'draft')->count();
+        $completedToday    = ShippingDocument::where('status', 'completed')
+            ->whereDate('updated_at', today())
+            ->count();
 
-        // Operational counts for storeroom, procurement, and logistics
-        $inTransitDeliveries = \App\Models\Delivery::whereIn('status', ['pending', 'in_transit'])->count();
-        $pendingReturns = GateTransaction::where('type', 'IN_RETURN')->where('status', '!=', 'completed')->count();
-        $totalSpks = \App\Models\Spk::count();
-        $pendingSpks = \App\Models\ApprovalRequest::where('module', 'SPK')->where('status', 'pending')->count();
-
-        $recentPassEvents = GatePassEvent::with(['warehouse', 'gateTransaction.pic'])
+        $recentPassEvents = GatePassEvent::with([
+                'warehouse:id,name,code',
+                'shippingDocument:id,document_number,type,status',
+            ])
             ->latest()
             ->limit(10)
             ->get();
+
         $recentMismatches = GatePassEvent::where('mismatch_flag', true)
-            ->with(['warehouse', 'gateTransaction.pic'])
+            ->with([
+                'warehouse:id,name,code',
+                'shippingDocument:id,document_number,type,status',
+            ])
             ->latest()
             ->limit(5)
             ->get();
 
         return response()->json([
             'metrics' => [
-                'total_tags' => $totalTags,
-                'active_tags' => $activeTags,
-                'total_items' => $totalItems,
-                'active_work_orders' => $activeWorkOrders,
-                'pending_gate_approvals' => $pendingApprovals,
-                'in_transit_deliveries' => $inTransitDeliveries,
-                'pending_returns' => $pendingReturns,
-                'total_spks' => $totalSpks,
-                'pending_spks' => $pendingSpks,
+                'total_tags'          => $totalTags,
+                'active_tags'         => $activeTags,
+                'total_items'         => $totalItems,
+                'active_shipping_docs'=> $activeShippingDocs,
+                'draft_docs'          => $draftDocs,
+                'completed_today'     => $completedToday,
             ],
             'recent_gate_events' => $recentPassEvents,
-            'recent_mismatches' => $recentMismatches,
+            'recent_mismatches'  => $recentMismatches,
         ]);
     }
 

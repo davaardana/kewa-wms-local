@@ -4,7 +4,6 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Item;
-use App\Models\Principal;
 use App\Models\Project;
 use App\Models\RfidTag;
 use App\Models\Warehouse;
@@ -14,31 +13,6 @@ use Illuminate\Support\Facades\DB;
 
 class MasterDataController extends Controller
 {
-    // Principals
-    public function getPrincipals(): JsonResponse
-    {
-        return response()->json(Principal::withCount(['projects', 'spks'])->get());
-    }
-
-    public function createPrincipal(Request $request): JsonResponse
-    {
-        $user = $request->user();
-        if ($user && !in_array($user->role, ['superadmin', 'pm', 'procurement'])) {
-            return response()->json(['message' => 'Akses Ditolak: Hanya Superadmin, PM, atau Tim Pengadaan yang berwenang menambahkan Principal.'], 403);
-        }
-
-        $validated = $request->validate([
-            'name' => 'required|string|max:150',
-            'code' => 'required|string|max:50|unique:principals,code',
-            'contact_person' => 'nullable|string|max:100',
-            'phone' => 'nullable|string|max:50',
-            'email' => 'nullable|email|max:100',
-            'address' => 'nullable|string',
-        ]);
-
-        $principal = Principal::create($validated);
-        return response()->json($principal, 201);
-    }
 
     // Projects
     public function getProjects(): JsonResponse
@@ -193,7 +167,7 @@ class MasterDataController extends Controller
     public function createItem(Request $request): JsonResponse
     {
         $user = $request->user();
-        if ($user && !in_array($user->role, ['superadmin', 'pm', 'procurement'])) {
+        if ($user && !in_array($user->role, ['superadmin', 'pm'])) {
             return response()->json(['message' => 'Akses Ditolak: Hanya Superadmin, PM, atau Tim Pengadaan yang berwenang menambahkan Material ke Katalog.'], 403);
         }
 
@@ -220,31 +194,5 @@ class MasterDataController extends Controller
         return response()->json($item, 201);
     }
 
-    // Vehicles (Armada Truk / Kendaraan Pengangkut)
-    public function getVehicles(): JsonResponse
-    {
-        return response()->json(\App\Models\Vehicle::latest()->get());
-    }
 
-    public function createVehicle(Request $request): JsonResponse
-    {
-        $user = $request->user();
-        if ($user && !in_array($user->role, ['superadmin', 'pm', 'procurement'])) {
-            return response()->json(['message' => 'Akses Ditolak: Hanya Superadmin, PM, atau Tim Pengadaan yang berwenang mendaftarkan Armada Truk.'], 403);
-        }
-
-        $validated = $request->validate([
-            'plate_number' => 'required|string|max:50|unique:vehicles,plate_number',
-            'vehicle_type' => 'required|in:pickup,truck_medium,truck_heavy,trailer',
-            'driver_name' => 'nullable|string|max:150',
-            'driver_phone' => 'nullable|string|max:50',
-            'transporter_name' => 'nullable|string|max:150',
-            'max_pole_capacity' => 'required|integer|min:1',
-            'is_active' => 'boolean',
-            'notes' => 'nullable|string',
-        ]);
-
-        $vehicle = \App\Models\Vehicle::create($validated);
-        return response()->json($vehicle, 201);
-    }
 }

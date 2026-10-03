@@ -2,10 +2,7 @@
 
 namespace Database\Seeders;
 
-use App\Models\ApprovalTemplate;
-use App\Models\ApprovalTemplateStep;
 use App\Models\Item;
-use App\Models\Principal;
 use App\Models\User;
 use App\Models\Warehouse;
 use Illuminate\Database\Seeder;
@@ -14,30 +11,21 @@ use Illuminate\Support\Facades\Hash;
 class LaunchSeeder extends Seeder
 {
     /**
-     * Seed pure Master Data for Launch / Production Go-Live.
-     * Contains NO fake transactions, NO dummy SPKs, NO fake deliveries.
+     * Seed Master Data for MOSA WMS RFID — Launch / Production.
+     * Contains: Users, Warehouses, Item Catalog only.
+     * NO fake transactions, NO dummy SPKs, NO fake deliveries.
      */
     public function run(): void
     {
-        // 1. Initial Production & Operation Users
-        $password = Hash::make('password123');
+        $password = Hash::make('password');
 
+        // ── 1. Users ──────────────────────────────────────────────
         $superAdmin = User::firstOrCreate(
             ['email' => 'superadmin@mosa.id'],
             [
-                'name' => 'Super Administrator',
-                'role' => 'superadmin',
-                'phone' => '08111222333',
-                'password' => $password,
-            ]
-        );
-
-        $direksi = User::firstOrCreate(
-            ['email' => 'direksi.hendra@mosa.id'],
-            [
-                'name' => 'Hendra Wijaya (Direktur Utama / Management)',
-                'role' => 'management',
-                'phone' => '08119998881',
+                'name'     => 'Super Administrator',
+                'role'     => 'superadmin',
+                'phone'    => '08111222333',
                 'password' => $password,
             ]
         );
@@ -45,168 +33,81 @@ class LaunchSeeder extends Seeder
         $pm = User::firstOrCreate(
             ['email' => 'pm.budi@mosa.id'],
             [
-                'name' => 'Budi Santoso (Project Manager)',
-                'role' => 'pm',
-                'phone' => '081234567890',
+                'name'     => 'Budi Santoso (Project Manager)',
+                'role'     => 'pm',
+                'phone'    => '081234567890',
                 'password' => $password,
             ]
         );
 
-        $procurement = User::firstOrCreate(
-            ['email' => 'procurement.siti@mosa.id'],
+        $picLapangan = User::firstOrCreate(
+            ['email' => 'pic.joko@mosa.id'],
             [
-                'name' => 'Siti Aminah (Procurement)',
-                'role' => 'procurement',
-                'phone' => '081298765432',
+                'name'     => 'Joko Prasetyo (PIC Lapangan)',
+                'role'     => 'pic_lapangan',
+                'phone'    => '081345678901',
                 'password' => $password,
             ]
         );
 
-        $storeroom = User::firstOrCreate(
-            ['email' => 'storeroom.joko@mosa.id'],
-            [
-                'name' => 'Joko Prasetyo (Storeroom Staff)',
-                'role' => 'storeroom',
-                'phone' => '081345678901',
-                'password' => $password,
-            ]
-        );
-
-        $picAgus = User::firstOrCreate(
-            ['email' => 'pic.agus@mosa.id'],
-            [
-                'name' => 'Agus Pratama (PIC Lapangan)',
-                'role' => 'pic_lapangan',
-                'phone' => '081567890123',
-                'password' => $password,
-            ]
-        );
-
-        $picDani = User::firstOrCreate(
-            ['email' => 'pic.dani@mosa.id'],
-            [
-                'name' => 'Dani Kurniawan (PIC Lapangan)',
-                'role' => 'pic_lapangan',
-                'phone' => '081678901234',
-                'password' => $password,
-            ]
-        );
-
-        $gateService = User::firstOrCreate(
-            ['email' => 'gate.service@mosa.id'],
-            [
-                'name' => 'IoT Gate Edge Bridge',
-                'role' => 'gate_service',
-                'phone' => '081999888777',
-                'password' => $password,
-            ]
-        );
-
-        // 2. Principals Telco
-        $myrep = Principal::firstOrCreate(
-            ['code' => 'MYREP'],
-            [
-                'name' => 'PT MyRepublic Indonesia',
-                'contact_person' => 'Rian Hidayat (Head of Rollout)',
-                'phone' => '021-50505050',
-                'email' => 'vendor.ops@myrepublic.co.id',
-                'address' => 'Gedung MyRepublic Lt. 8, BSD City, Tangerang',
-            ]
-        );
-
-        $biznet = Principal::firstOrCreate(
-            ['code' => 'BZNET'],
-            [
-                'name' => 'PT Biznet Networks',
-                'contact_person' => 'Hendro Wijaya (Procurement Manager)',
-                'phone' => '021-57998888',
-                'email' => 'procurement@biznetnetworks.com',
-                'address' => 'MidPlaza 2 Lt. 8, Jl. Jend. Sudirman, Jakarta Pusat',
-            ]
-        );
-
-        $telkom = Principal::firstOrCreate(
-            ['code' => 'TLKM'],
-            [
-                'name' => 'PT Telkom Indonesia Tbk',
-                'contact_person' => 'Bambang Soediro (Logistik FO)',
-                'phone' => '021-5215123',
-                'email' => 'logistik.access@telkom.co.id',
-                'address' => 'Telkom Landmark Tower, Jl. Gatot Subroto, Jakarta Selatan',
-            ]
-        );
-
-        $moratel = Principal::firstOrCreate(
-            ['code' => 'MORA'],
-            [
-                'name' => 'PT Moratelindo (Oxygen.id)',
-                'contact_person' => 'Dwi Cahyono',
-                'phone' => '021-31998800',
-                'email' => 'rollout@moratelindo.co.id',
-                'address' => 'Graha 9 Lt. 5, Jl. Matraman Raya No. 9, Jakarta Timur',
-            ]
-        );
-
-        // 3. Warehouses
+        // ── 2. Warehouses ─────────────────────────────────────────
         $whBogor = Warehouse::firstOrCreate(
             ['code' => 'WH-BOGOR-01'],
             [
-                'project_id' => null,
-                'name' => 'Gudang Transit Proyek Tajur Bogor',
-                'gate_mode' => 'SINGLE_ANTENNA_SESSION',
-                'address' => 'Jl. Raya Tajur No. 88, Bogor Timur',
-                'latitude' => -6.6214560,
-                'longitude' => 106.8284500,
-                'pic_user_id' => $storeroom->id,
-                'phone' => '0813-9876-5432',
-                'capacity' => 1000,
-                'is_active' => true,
+                'name'        => 'Gudang Transit Proyek Tajur Bogor',
+                'gate_mode'   => 'SINGLE_ANTENNA_SESSION',
+                'address'     => 'Jl. Raya Tajur No. 88, Bogor Timur',
+                'latitude'    => -6.6214560,
+                'longitude'   => 106.8284500,
+                'pic_user_id' => $picLapangan->id,
+                'phone'       => '0813-9876-5432',
+                'capacity'    => 1000,
+                'is_active'   => true,
             ]
         );
         $whBogor->staff()->syncWithoutDetaching([
-            $storeroom->id => ['role_in_warehouse' => 'pic'],
-            $superAdmin->id => ['role_in_warehouse' => 'staff'],
+            $picLapangan->id => ['role_in_warehouse' => 'pic'],
+            $superAdmin->id  => ['role_in_warehouse' => 'staff'],
         ]);
 
         $whDepok = Warehouse::firstOrCreate(
             ['code' => 'WH-DEPOK-01'],
             [
-                'project_id' => null,
-                'name' => 'Gudang Lapangan Margonda',
-                'gate_mode' => 'SINGLE_ANTENNA_SESSION',
-                'address' => 'Jl. Margonda Raya No. 120, Depok',
-                'latitude' => -6.3728400,
-                'longitude' => 106.8329400,
-                'pic_user_id' => $storeroom->id,
-                'phone' => '0812-3456-7890',
-                'capacity' => 500,
-                'is_active' => true,
+                'name'        => 'Gudang Lapangan Margonda',
+                'gate_mode'   => 'SINGLE_ANTENNA_SESSION',
+                'address'     => 'Jl. Margonda Raya No. 120, Depok',
+                'latitude'    => -6.3728400,
+                'longitude'   => 106.8329400,
+                'pic_user_id' => $picLapangan->id,
+                'phone'       => '0812-3456-7890',
+                'capacity'    => 500,
+                'is_active'   => true,
             ]
         );
         $whDepok->staff()->syncWithoutDetaching([
-            $storeroom->id => ['role_in_warehouse' => 'pic'],
+            $picLapangan->id => ['role_in_warehouse' => 'pic'],
         ]);
 
-        $whSharedHub = Warehouse::firstOrCreate(
+        $whHub = Warehouse::firstOrCreate(
             ['code' => 'WH-HUB-JABAR'],
             [
-                'project_id' => null,
-                'name' => 'Gudang Hub Regional Jabar Sentul (Shared Multi-Project)',
-                'gate_mode' => 'DUAL_ANTENNA_AUTO',
-                'address' => 'Kawasan Industri Sentul Kav. 8, Bogor-Depok Ring Road',
-                'latitude' => -6.5341200,
-                'longitude' => 106.8572100,
-                'pic_user_id' => $storeroom->id,
-                'phone' => '0811-2233-4455',
-                'capacity' => 3000,
-                'is_active' => true,
+                'name'        => 'Gudang Hub Regional Jabar Sentul (Shared Multi-Project)',
+                'gate_mode'   => 'DUAL_ANTENNA_AUTO',
+                'address'     => 'Kawasan Industri Sentul Kav. 8, Bogor-Depok Ring Road',
+                'latitude'    => -6.5341200,
+                'longitude'   => 106.8572100,
+                'pic_user_id' => $picLapangan->id,
+                'phone'       => '0811-2233-4455',
+                'capacity'    => 3000,
+                'is_active'   => true,
             ]
         );
-        $whSharedHub->staff()->syncWithoutDetaching([
-            $storeroom->id => ['role_in_warehouse' => 'pic'],
-            $superAdmin->id => ['role_in_warehouse' => 'staff'],
+        $whHub->staff()->syncWithoutDetaching([
+            $picLapangan->id => ['role_in_warehouse' => 'pic'],
+            $superAdmin->id  => ['role_in_warehouse' => 'staff'],
         ]);
-        // 4. Comprehensive 35 Master Items Catalog for FO Rollout
+
+        // ── 3. Item Catalog (FO Rollout Tools & Materials) ────────
         $catalogItems = [
             // --- KELOMPOK 1: TIANG & PONDASI (POLE) ---
             [
@@ -607,119 +508,5 @@ class LaunchSeeder extends Seeder
         foreach ($catalogItems as $item) {
             Item::firstOrCreate(['code' => $item['code']], $item);
         }
-
-        // 8. Approval Templates
-        // Template 1: SPK Standar (<= 50 Juta -> 1 Tier PM)
-        $tplSpkStd = ApprovalTemplate::firstOrCreate(
-            ['code' => 'TPL-SPK-STD'],
-            [
-                'name' => 'Alur SPK Pengadaan Reguler (<= 50 Jt)',
-                'module' => 'SPK',
-                'description' => 'Persetujuan 1 tingkat oleh Project Manager untuk pengadaan material di bawah Rp 50 Juta',
-                'min_amount' => 0,
-                'max_amount' => 50000000,
-                'is_default' => true,
-            ]
-        );
-        ApprovalTemplateStep::firstOrCreate(
-            ['approval_template_id' => $tplSpkStd->id, 'step_order' => 1],
-            [
-                'step_name' => 'Review & Persetujuan PM',
-                'approver_user_id' => $pm->id,
-                'sla_hours' => 24,
-                'can_reject' => true,
-            ]
-        );
-
-        // Template 2: SPK Nilai Besar (> 50 Juta -> 2 Tier PM + Superadmin)
-        $tplSpkHigh = ApprovalTemplate::firstOrCreate(
-            ['code' => 'TPL-SPK-HIGH'],
-            [
-                'name' => 'Alur SPK Pengadaan Nilai Besar (> 50 Jt)',
-                'module' => 'SPK',
-                'description' => 'Persetujuan 2 tingkat berjenjang (PM Review lalu Superadmin Final Sign-off) untuk pengadaan > Rp 50 Juta',
-                'min_amount' => 50000001,
-                'max_amount' => null,
-                'is_default' => false,
-            ]
-        );
-        ApprovalTemplateStep::firstOrCreate(
-            ['approval_template_id' => $tplSpkHigh->id, 'step_order' => 1],
-            [
-                'step_name' => 'Step 1: Evaluasi & Review PM',
-                'approver_user_id' => $pm->id,
-                'sla_hours' => 24,
-                'can_reject' => true,
-            ]
-        );
-        ApprovalTemplateStep::firstOrCreate(
-            ['approval_template_id' => $tplSpkHigh->id, 'step_order' => 2],
-            [
-                'step_name' => 'Step 2: Sign-off Direksi / Superadmin',
-                'approver_user_id' => $superAdmin->id,
-                'sla_hours' => 48,
-                'can_reject' => true,
-            ]
-        );
-
-        // Template 3: Work Order & Kunci Kuota BOQ
-        $tplWo = ApprovalTemplate::firstOrCreate(
-            ['code' => 'TPL-WO-DEFAULT'],
-            [
-                'name' => 'Alur Persetujuan Work Order & Kunci Kuota BOQ',
-                'module' => 'WORK_ORDER',
-                'description' => 'Penguncian kuota BOQ proyek oleh Project Manager',
-                'is_default' => true,
-            ]
-        );
-        ApprovalTemplateStep::firstOrCreate(
-            ['approval_template_id' => $tplWo->id, 'step_order' => 1],
-            [
-                'step_name' => 'Approval & Penguncian Kuota PM',
-                'approver_user_id' => $pm->id,
-                'sla_hours' => 12,
-                'can_reject' => true,
-            ]
-        );
-
-        // Template 4: Delivery Anomaly / Mismatch Shortage
-        $tplDelivery = ApprovalTemplate::firstOrCreate(
-            ['code' => 'TPL-DELIVERY-MISMATCH'],
-            [
-                'name' => 'Alur Investigasi Selisih Truk (In-Transit Shrinkage)',
-                'module' => 'DELIVERY',
-                'description' => 'Persetujuan investigasi jika terdeteksi selisih antara muat Handheld 1 vs bongkar Handheld 2',
-                'is_default' => true,
-            ]
-        );
-        ApprovalTemplateStep::firstOrCreate(
-            ['approval_template_id' => $tplDelivery->id, 'step_order' => 1],
-            [
-                'step_name' => 'Investigasi & Approval Penerimaan PM',
-                'approver_user_id' => $pm->id,
-                'sla_hours' => 24,
-                'can_reject' => true,
-            ]
-        );
-
-        // Template 5: Return / Scrap
-        $tplReturn = ApprovalTemplate::firstOrCreate(
-            ['code' => 'TPL-RETURN-SCRAP'],
-            [
-                'name' => 'Alur Verifikasi Retur & Afkir Material',
-                'module' => 'RETURN_SCRAP',
-                'description' => 'Persetujuan penerimaan barang sisa/rusak dari lapangan',
-                'is_default' => true,
-            ]
-        );
-        ApprovalTemplateStep::firstOrCreate(
-            ['approval_template_id' => $tplReturn->id, 'step_order' => 1],
-            [
-                'step_name' => 'Verifikasi Fisik Gudang & PM',
-                'approver_user_id' => $pm->id,
-                'sla_hours' => 24,
-                'can_reject' => true,
-            ]
-        );
     }
 }

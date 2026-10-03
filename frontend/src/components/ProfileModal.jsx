@@ -55,7 +55,7 @@ export default function ProfileModal({ isOpen, user, onClose, onUserUpdated }) {
     }
   };
 
-  const inputClass = 'w-full rounded-xl border border-slate-300 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500';
+  const inputClass = 'w-full rounded-xl border border-slate-300 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500';
 
   return (
     <Portal>
@@ -71,7 +71,7 @@ export default function ProfileModal({ isOpen, user, onClose, onUserUpdated }) {
               <label className="block text-xs font-semibold text-slate-600">Nama<input required maxLength={150} value={profile.name} onChange={(e) => setProfile({ ...profile, name: e.target.value })} className={`${inputClass} mt-1`} /></label>
               <label className="block text-xs font-semibold text-slate-600">Email<input required type="email" maxLength={150} value={profile.email} onChange={(e) => setProfile({ ...profile, email: e.target.value })} className={`${inputClass} mt-1`} /></label>
               <label className="block text-xs font-semibold text-slate-600">Nomor HP<input maxLength={50} value={profile.phone} onChange={(e) => setProfile({ ...profile, phone: e.target.value })} className={`${inputClass} mt-1`} /></label>
-              <button disabled={savingProfile} className="flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"><Save className="h-4 w-4" />{savingProfile ? 'Menyimpan...' : 'Simpan Profil'}</button>
+              <button disabled={savingProfile} className="flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"><Save className="h-4 w-4" />{savingProfile ? 'Menyimpan...' : 'Simpan Profil'}</button>
             </form>
             <form onSubmit={savePassword} className="space-y-4">
               <h3 className="flex items-center gap-2 font-semibold text-slate-800"><KeyRound className="h-4 w-4" /> Ubah Password</h3>

@@ -21,6 +21,11 @@ class UserController extends Controller
     {
         $query = User::with('assignedWarehouses')->orderBy('name');
 
+        // Default: only active users. Superadmin can pass include_inactive=1 to see all.
+        if (!$request->boolean('include_inactive')) {
+            $query->where('is_active', true);
+        }
+
         if ($request->has('role') && $request->role !== 'ALL') {
             $query->where('role', $request->role);
         }
@@ -28,9 +33,9 @@ class UserController extends Controller
         if ($request->has('search') && $request->search) {
             $s = $request->search;
             $query->where(function ($q) use ($s) {
-                $q->where('name', 'like', "%{$s}%")
-                  ->orWhere('email', 'like', "%{$s}%")
-                  ->orWhere('phone', 'like', "%{$s}%");
+                $q->where('name', 'ilike', "%{$s}%")
+                  ->orWhere('email', 'ilike', "%{$s}%")
+                  ->orWhere('phone', 'ilike', "%{$s}%");
             });
         }
 
@@ -48,7 +53,7 @@ class UserController extends Controller
             'name' => 'required|string|max:150',
             'email' => 'required|email|max:150|unique:users,email',
             'password' => 'required|string|min:6',
-            'role' => 'required|string|max:50',
+            'role' => ['required', 'string', \Illuminate\Validation\Rule::in(['superadmin', 'pm', 'pic_lapangan'])],
             'phone' => 'nullable|string|max:50',
             'is_active' => 'boolean',
             'warehouse_ids' => 'nullable|array',
@@ -88,7 +93,7 @@ class UserController extends Controller
             'name' => 'required|string|max:150',
             'email' => ['required', 'email', 'max:150', Rule::unique('users')->ignore($user->id)],
             'password' => 'nullable|string|min:6',
-            'role' => 'required|string|max:50',
+            'role' => ['required', 'string', \Illuminate\Validation\Rule::in(['superadmin', 'pm', 'pic_lapangan'])],
             'phone' => 'nullable|string|max:50',
             'is_active' => 'boolean',
             'warehouse_ids' => 'sometimes|array',
@@ -129,14 +134,30 @@ class UserController extends Controller
         $this->authorizeSuperAdmin(request());
 
         $user = User::findOrFail($id);
-        $user->is_active = false;
-        $user->save();
 
-        return response()->json([
-            'success' => true,
-            'message' => 'Pengguna dinonaktifkan; identitas audit tetap disimpan',
-            'data' => $user,
-        ]);
+        if ($user->role === 'superadmin') {
+            return response()->json(['message' => 'Tidak dapat menghapus akun superadmin.'], 403);
+        }
+
+        try {
+            $user->tokens()->delete();
+            $user->delete();
+
+            return response()->json([
+                'success' => true,
+                'message' => "Pengguna {$user->name} berhasil dihapus permanen.",
+            ]);
+        } catch (\Illuminate\Database\QueryException $e) {
+            // FK constraint — deactivate instead
+            $user->is_active = false;
+            $user->save();
+
+            return response()->json([
+                'success' => true,
+                'message' => "Pengguna {$user->name} dinonaktifkan (tidak bisa dihapus karena terkait data audit).",
+                'data' => $user,
+            ]);
+        }
     }
 
     /**
@@ -147,6 +168,12 @@ class UserController extends Controller
         $this->authorizeSuperAdmin(request());
 
         $user = User::findOrFail($id);
+
+        // Prevent SA from locking themselves out
+        if (request()->user()->id === $user->id) {
+            return response()->json(['message' => 'Tidak dapat mengubah status aktif akun Anda sendiri.'], 403);
+        }
+
         $user->is_active = !$user->is_active;
         $user->save();
 
@@ -167,7 +194,12 @@ class UserController extends Controller
         $modules = $this->getSystemModules();
         $dbRoles = Role::with('permissions')->get();
 
-        $roles = $dbRoles->map(function ($r) use ($modules) {
+        // Pre-fetch user counts grouped by role — prevents N+1 query
+        $userCounts = User::selectRaw('role, count(*) as total')
+            ->groupBy('role')
+            ->pluck('total', 'role');
+
+        $roles = $dbRoles->map(function ($r) use ($modules, $userCounts) {
             $perms = [];
             foreach ($modules as $m) {
                 $perms[$m['key']] = false;
@@ -184,7 +216,7 @@ class UserController extends Controller
                 'color' => $r->color ?: 'indigo',
                 'description' => $r->description,
                 'is_system' => (bool) $r->is_system,
-                'user_count' => User::where('role', $r->code)->count(),
+                'user_count' => (int) ($userCounts[$r->code] ?? 0),
                 'permissions' => $perms,
             ];
         });
@@ -355,111 +387,48 @@ class UserController extends Controller
 
         $defaultRoles = [
             [
-                'name' => 'Super Administrator',
-                'code' => 'superadmin',
-                'badge' => '👑 SUPERADMIN',
-                'color' => 'purple',
-                'description' => 'Akses penuh tanpa batas, konfigurasi sistem, user management, audit trail mutasi, dan override bypass gerbang RFID.',
-                'is_system' => true,
+                'name'        => 'Super Administrator',
+                'code'        => 'superadmin',
+                'badge'       => '\U0001f451 SUPERADMIN',
+                'color'       => 'purple',
+                'description' => 'Akses penuh tanpa batas: konfigurasi sistem, kelola pengguna, audit trail, override gerbang RFID.',
+                'is_system'   => true,
                 'permissions' => [
-                    'spk_create' => true, 'spk_approve' => true,
-                    'dispatch_scan' => true, 'receiving_scan' => true,
-                    'boq_quota_lock' => true, 'report_prepared' => true,
-                    'gate_monitor' => true, 'gate_override' => true,
-                    'field_pwa' => true, 'return_verify' => true,
-                    'stock_opname' => true, 'audit_trail' => true,
+                    'shipping_document_create' => true, 'shipping_document_approve' => true,
+                    'shipping_document_complete' => true, 'shipping_document_cancel' => true,
                     'tag_enrollment' => true, 'master_data' => true,
-                    'approval_settings' => true, 'user_management' => true,
+                    'gate_monitor' => true, 'device_pairing' => true,
+                    'laporan' => true, 'user_management' => true,
                 ],
             ],
             [
-                'name' => 'Direksi / Top Level Management',
-                'code' => 'management',
-                'badge' => '👔 DIREKSI / BOD',
-                'color' => 'indigo',
-                'description' => 'Akses eksekutif pemantauan seluruh proyek FO, audit trail mutasi, status armada pengiriman, analitik shrinkage, dan approval tingkat tinggi.',
-                'is_system' => true,
+                'name'        => 'Project Manager (PM)',
+                'code'        => 'pm',
+                'badge'       => '\U0001f468\u200d\U0001f4bc PM APPROVER',
+                'color'       => 'amber',
+                'description' => 'Buat dan approve dokumen, master data, RFID gate, laporan. Tidak bisa kelola pengguna.',
+                'is_system'   => true,
                 'permissions' => [
-                    'spk_create' => false, 'spk_approve' => true,
-                    'dispatch_scan' => false, 'receiving_scan' => false,
-                    'boq_quota_lock' => false, 'report_prepared' => false,
-                    'gate_monitor' => true, 'gate_override' => false,
-                    'field_pwa' => false, 'return_verify' => false,
-                    'stock_opname' => true, 'audit_trail' => true,
-                    'tag_enrollment' => false, 'master_data' => true,
-                    'approval_settings' => true, 'user_management' => false,
-                ],
-            ],
-            [
-                'name' => 'Project Manager (PM)',
-                'code' => 'pm',
-                'badge' => '👨‍💼 PM APPROVER',
-                'color' => 'amber',
-                'description' => 'Pemilik otoritas proyek, penguncian kuota BOQ (Invarian SoD), persetujuan SPK pengadaan dan sign-off retur material sisa.',
-                'is_system' => true,
-                'permissions' => [
-                    'spk_create' => true, 'spk_approve' => true,
-                    'dispatch_scan' => false, 'receiving_scan' => false,
-                    'boq_quota_lock' => true, 'report_prepared' => false,
-                    'gate_monitor' => true, 'gate_override' => false,
-                    'field_pwa' => false, 'return_verify' => true,
-                    'stock_opname' => true, 'audit_trail' => true,
+                    'shipping_document_create' => true, 'shipping_document_approve' => true,
+                    'shipping_document_complete' => false, 'shipping_document_cancel' => true,
                     'tag_enrollment' => true, 'master_data' => true,
-                    'approval_settings' => true, 'user_management' => false,
+                    'gate_monitor' => true, 'device_pairing' => true,
+                    'laporan' => true, 'user_management' => false,
                 ],
             ],
             [
-                'name' => 'Procurement & Logistik',
-                'code' => 'procurement',
-                'badge' => '📋 PROCUREMENT',
-                'color' => 'teal',
-                'description' => 'Pembuatan SPK/PO vendor, pemindaian muat truk Handheld 1 di yard principal, pemantauan status truk dan in-transit shrinkage.',
-                'is_system' => true,
+                'name'        => 'PIC Lapangan',
+                'code'        => 'pic_lapangan',
+                'badge'       => '\U0001f477 PIC LAPANGAN',
+                'color'       => 'blue',
+                'description' => 'Assign tag, selesaikan dokumen, monitor gate, laporan. Tidak bisa buat/approve dokumen atau kelola master data.',
+                'is_system'   => true,
                 'permissions' => [
-                    'spk_create' => true, 'spk_approve' => false,
-                    'dispatch_scan' => true, 'receiving_scan' => false,
-                    'boq_quota_lock' => false, 'report_prepared' => false,
-                    'gate_monitor' => false, 'gate_override' => false,
-                    'field_pwa' => false, 'return_verify' => false,
-                    'stock_opname' => false, 'audit_trail' => true,
-                    'tag_enrollment' => true, 'master_data' => true,
-                    'approval_settings' => false, 'user_management' => false,
-                ],
-            ],
-            [
-                'name' => 'Petugas Gudang (Storeroom)',
-                'code' => 'storeroom',
-                'badge' => '📦 STOREROOM',
-                'color' => 'blue',
-                'description' => 'Bongkar & scan terima Handheld 2 di gerbang, pelaporan prepared_qty (READ-ONLY kuota), verifikasi fisik retur, dan stock opname yard.',
-                'is_system' => true,
-                'permissions' => [
-                    'spk_create' => false, 'spk_approve' => false,
-                    'dispatch_scan' => false, 'receiving_scan' => true,
-                    'boq_quota_lock' => false, 'report_prepared' => true,
-                    'gate_monitor' => true, 'gate_override' => false,
-                    'field_pwa' => false, 'return_verify' => true,
-                    'stock_opname' => true, 'audit_trail' => false,
-                    'tag_enrollment' => false, 'master_data' => false,
-                    'approval_settings' => false, 'user_management' => false,
-                ],
-            ],
-            [
-                'name' => 'Mandor / PIC Lapangan',
-                'code' => 'pic_lapangan',
-                'badge' => '👷 MANDOR LAPANGAN',
-                'color' => 'emerald',
-                'description' => 'Pengguna aplikasi PWA mobile, checkout muatan truk saat melintas gerbang sensor RFID, dan pelaporan retur sisa kabel/tiang proyek.',
-                'is_system' => true,
-                'permissions' => [
-                    'spk_create' => false, 'spk_approve' => false,
-                    'dispatch_scan' => false, 'receiving_scan' => false,
-                    'boq_quota_lock' => false, 'report_prepared' => false,
-                    'gate_monitor' => false, 'gate_override' => false,
-                    'field_pwa' => true, 'return_verify' => false,
-                    'stock_opname' => false, 'audit_trail' => false,
-                    'tag_enrollment' => false, 'master_data' => false,
-                    'approval_settings' => false, 'user_management' => false,
+                    'shipping_document_create' => false, 'shipping_document_approve' => false,
+                    'shipping_document_complete' => true, 'shipping_document_cancel' => false,
+                    'tag_enrollment' => true, 'master_data' => false,
+                    'gate_monitor' => true, 'device_pairing' => false,
+                    'laporan' => true, 'user_management' => false,
                 ],
             ],
         ];
@@ -492,7 +461,7 @@ class UserController extends Controller
         return [
             ['key' => 'spk_create', 'name' => 'Buat SPK & PO Vendor', 'group' => 'Pengadaan & Logistik'],
             ['key' => 'spk_approve', 'name' => 'Approval SPK & PO Vendor', 'group' => 'Pengadaan & Logistik'],
-            ['key' => 'dispatch_scan', 'name' => 'Handheld 1: Dispatch Scan di Principal', 'group' => 'Pengadaan & Logistik'],
+            ['key' => 'dispatch_scan', 'name' => 'Handheld 1: Dispatch Scan Barang Keluar', 'group' => 'Pengadaan & Logistik'],
             ['key' => 'receiving_scan', 'name' => 'Handheld 2: Receiving Scan di Gudang', 'group' => 'Pengadaan & Logistik'],
             ['key' => 'boq_quota_lock', 'name' => 'Kunci Kuota BOQ Work Order (PM Only)', 'group' => 'Perencanaan & Governance'],
             ['key' => 'report_prepared', 'name' => 'Input Prepared Qty Storeroom', 'group' => 'Perencanaan & Governance'],

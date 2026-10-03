@@ -45,7 +45,7 @@ export default function ToastContainer() {
           key={t.id}
           className={`pointer-events-auto flex items-start gap-3 p-3.5 rounded-2xl shadow-xl border backdrop-blur-md transition-all duration-300 transform translate-y-0 ${
             t.type === 'success'
-              ? 'bg-emerald-900/95 border-emerald-500/50 text-white'
+              ? 'bg-blue-900/95 border-blue-500/50 text-white'
               : t.type === 'error'
               ? 'bg-rose-900/95 border-rose-500/50 text-white'
               : t.type === 'warning'
@@ -54,7 +54,7 @@ export default function ToastContainer() {
           }`}
         >
           <div className="shrink-0 mt-0.5">
-            {t.type === 'success' && <CheckCircle2 className="w-5 h-5 text-emerald-400" />}
+            {t.type === 'success' && <CheckCircle2 className="w-5 h-5 text-blue-400" />}
             {t.type === 'error' && <AlertCircle className="w-5 h-5 text-rose-400" />}
             {t.type === 'warning' && <AlertTriangle className="w-5 h-5 text-amber-400" />}
             {t.type === 'info' && <Info className="w-5 h-5 text-blue-400" />}

@@ -41,17 +41,25 @@ class RfidTagController extends Controller
     public function enroll(Request $request): JsonResponse
     {
         $user = $request->user();
-        if ($user && !in_array($user->role, ['superadmin', 'pm', 'procurement'])) {
+        if ($user && !in_array($user->role, ['superadmin', 'pm'])) {
             return response()->json(['message' => 'Akses Ditolak: Hanya Superadmin, PM, atau Tim Pengadaan yang berwenang mendaftarkan tag RFID baru.'], 403);
         }
+
+        $request->merge([
+            'epc' => $request->filled('epc') ? strtoupper(trim($request->input('epc'))) : null,
+            'epc_list' => collect($request->input('epc_list', []))
+                ->map(fn ($epc) => strtoupper(trim($epc)))
+                ->values()
+                ->all(),
+        ]);
 
         $validated = $request->validate([
             'item_id' => 'required|exists:items,id',
             'warehouse_id' => 'nullable|exists:warehouses,id',
             'tag_type' => 'required|in:anti_metal,sticker,bag_batch',
-            'epc' => 'nullable|string|max:64|unique:rfid_tags,epc',
+            'epc' => ['nullable', 'string', 'min:8', 'max:64', 'regex:/^[0-9A-Fa-f]+$/', 'unique:rfid_tags,epc'],
             'epc_list' => 'nullable|array',
-            'epc_list.*' => 'string|max:64|distinct',
+            'epc_list.*' => ['string', 'min:8', 'max:64', 'regex:/^[0-9A-Fa-f]+$/', 'distinct', 'unique:rfid_tags,epc'],
             'notes' => 'nullable|string',
         ]);
 
@@ -71,6 +79,12 @@ class RfidTagController extends Controller
         }
 
         $epcsToEnroll = array_values(array_unique(array_map(fn ($epc) => strtoupper(trim($epc)), $epcsToEnroll)));
+        if (count($epcsToEnroll) !== count(array_filter(array_map('trim', array_merge(
+            $validated['epc'] ? [$validated['epc']] : [],
+            $validated['epc_list'] ?? [],
+        ))))) {
+            return response()->json(['message' => 'EPC tidak boleh duplikat dalam satu permintaan enrollment.'], 422);
+        }
         $userId = $request->user()->id;
 
         $enrolledTags = DB::transaction(function () use ($epcsToEnroll, $validated, $userId) {
@@ -102,7 +116,7 @@ class RfidTagController extends Controller
     public function reserve(Request $request): JsonResponse
     {
         $user = $request->user();
-        if ($user && !in_array($user->role, ['superadmin', 'pm', 'procurement'])) {
+        if ($user && !in_array($user->role, ['superadmin', 'pm'])) {
             return response()->json(['message' => 'Akses Ditolak: Hanya Superadmin, PM, atau Tim Pengadaan yang berwenang membuat EPC.'], 403);
         }
 

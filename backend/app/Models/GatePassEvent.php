@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use App\Models\ShippingDocument;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
@@ -19,7 +20,7 @@ class GatePassEvent extends Model
         'gate_device_id',
         'event_id',
         'observed_at',
-        'gate_transaction_id',
+        'shipping_document_id',
         'warehouse_id',
         'gate_id',
         'direction',
@@ -47,9 +48,9 @@ class GatePassEvent extends Model
         ];
     }
 
-    public function gateTransaction(): BelongsTo
+    public function shippingDocument(): BelongsTo
     {
-        return $this->belongsTo(GateTransaction::class);
+        return $this->belongsTo(ShippingDocument::class);
     }
 
     public function warehouse(): BelongsTo

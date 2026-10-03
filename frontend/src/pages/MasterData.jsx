@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { FlameButton } from '../components/ui/flame-button';
 import { masterApi, userApi } from '../services/api';
 import { showToast } from '../components/Toast';
 import Portal from '../components/Portal';
@@ -26,17 +27,13 @@ import {
 } from 'lucide-react';
 
 export default function MasterData({ defaultTab = 'items', onNavigate = null, currentUser = null }) {
-  const [activeTab, setActiveTab] = useState(defaultTab || 'items'); // items, warehouses, projects, principals, vehicles
+  const [activeTab, setActiveTab] = useState(defaultTab || 'items'); // items, warehouses, projects
   const [items, setItems] = useState([]);
   const [warehouses, setWarehouses] = useState([]);
   const [projects, setProjects] = useState([]);
-  const [principals, setPrincipals] = useState([]);
-  const [vehicles, setVehicles] = useState([]);
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
-
-
 
   // Form states
   const [showItemModal, setShowItemModal] = useState(false);
@@ -54,21 +51,10 @@ export default function MasterData({ defaultTab = 'items', onNavigate = null, cu
     epc_suffix_digits: 14,
   });
 
-  const [showVehicleModal, setShowVehicleModal] = useState(false);
-  const [newVehicle, setNewVehicle] = useState({
-    plate_number: '',
-    vehicle_type: 'truck_medium',
-    driver_name: '',
-    driver_phone: '',
-    transporter_name: '',
-    max_pole_capacity: 50,
-    notes: '',
-  });
 
   // Project Modal state
   const [showProjectModal, setShowProjectModal] = useState(false);
   const [newProject, setNewProject] = useState({
-    principal_id: '',
     code: '',
     name: '',
     client_name: '',
@@ -76,16 +62,6 @@ export default function MasterData({ defaultTab = 'items', onNavigate = null, cu
     status: 'active',
   });
 
-  // Principal Modal state
-  const [showPrincipalModal, setShowPrincipalModal] = useState(false);
-  const [newPrincipal, setNewPrincipal] = useState({
-    name: '',
-    code: '',
-    contact_person: '',
-    phone: '',
-    email: '',
-    address: '',
-  });
 
   // Warehouse Modal state
   const [showWarehouseModal, setShowWarehouseModal] = useState(false);
@@ -112,12 +88,6 @@ export default function MasterData({ defaultTab = 'items', onNavigate = null, cu
       if (targetTab === 'items') {
         const itRes = await masterApi.getItems();
         setItems(itRes.data || []);
-      } else if (targetTab === 'vehicles') {
-        const vehRes = await masterApi.getVehicles();
-        setVehicles(vehRes.data || []);
-      } else if (targetTab === 'principals') {
-        const prinRes = await masterApi.getPrincipals();
-        setPrincipals(prinRes.data || []);
       } else if (targetTab === 'projects') {
         const prRes = await masterApi.getProjects();
         setProjects(prRes.data || []);
@@ -170,41 +140,16 @@ export default function MasterData({ defaultTab = 'items', onNavigate = null, cu
     }
   };
 
-  const handleCreateVehicle = async (e) => {
-    e.preventDefault();
-    try {
-      const res = await masterApi.createVehicle(newVehicle);
-      setShowVehicleModal(false);
-      setNewVehicle({
-        plate_number: '',
-        vehicle_type: 'truck_medium',
-        driver_name: '',
-        driver_phone: '',
-        transporter_name: '',
-        max_pole_capacity: 50,
-        notes: '',
-      });
-      if (res.data) {
-        setVehicles((prev) => [res.data, ...prev.filter((v) => v.id !== res.data.id)]);
-      }
-      loadData('vehicles', false);
-      showToast('Armada truk baru berhasil didaftarkan!', 'success');
-    } catch (err) {
-      showToast('Gagal menambah kendaraan: ' + (err.response?.data?.message || err.message), 'error');
-    }
-  };
 
   const handleCreateProject = async (e) => {
     e.preventDefault();
     try {
       const payload = {
         ...newProject,
-        principal_id: newProject.principal_id ? parseInt(newProject.principal_id, 10) : null,
       };
       const res = await masterApi.createProject(payload);
       setShowProjectModal(false);
       setNewProject({
-        principal_id: '',
         code: '',
         name: '',
         client_name: '',
@@ -214,7 +159,6 @@ export default function MasterData({ defaultTab = 'items', onNavigate = null, cu
       if (res.data) {
         const fullProj = {
           ...res.data,
-          principal: principals.find((p) => p.id === res.data.principal_id) || res.data.principal,
         };
         setProjects((prev) => [fullProj, ...prev.filter((p) => p.id !== res.data.id)]);
       }
@@ -225,28 +169,6 @@ export default function MasterData({ defaultTab = 'items', onNavigate = null, cu
     }
   };
 
-  const handleCreatePrincipal = async (e) => {
-    e.preventDefault();
-    try {
-      const res = await masterApi.createPrincipal(newPrincipal);
-      setShowPrincipalModal(false);
-      setNewPrincipal({
-        name: '',
-        code: '',
-        contact_person: '',
-        phone: '',
-        email: '',
-        address: '',
-      });
-      if (res.data) {
-        setPrincipals((prev) => [res.data, ...prev.filter((p) => p.id !== res.data.id)]);
-      }
-      loadData('principals', false);
-      showToast('Principal Vendor baru berhasil didaftarkan!', 'success');
-    } catch (err) {
-      showToast('Gagal menambah principal: ' + (err.response?.data?.message || err.message), 'error');
-    }
-  };
 
   const handleCreateWarehouse = async (e) => {
     e.preventDefault();
@@ -289,9 +211,6 @@ export default function MasterData({ defaultTab = 'items', onNavigate = null, cu
 
   const openProjectModal = () => {
     setShowProjectModal(true);
-    if (principals.length === 0) {
-      masterApi.getPrincipals().then((res) => setPrincipals(res.data || [])).catch(() => {});
-    }
   };
 
   const openWarehouseModal = () => {
@@ -369,20 +288,7 @@ export default function MasterData({ defaultTab = 'items', onNavigate = null, cu
 
   const filteredProjects = projects.filter(
     (pr) => pr.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-            pr.code.toLowerCase().includes(searchTerm.toLowerCase()) ||
-            (pr.principal?.name || '').toLowerCase().includes(searchTerm.toLowerCase())
-  );
-
-  const filteredPrincipals = principals.filter(
-    (p) => p.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-            p.code.toLowerCase().includes(searchTerm.toLowerCase()) ||
-            (p.contact_person || '').toLowerCase().includes(searchTerm.toLowerCase())
-  );
-
-  const filteredVehicles = vehicles.filter(
-    (v) => (v.plate_number || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
-            (v.driver_name || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
-            (v.transporter_name || '').toLowerCase().includes(searchTerm.toLowerCase())
+            pr.code.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
   return (
@@ -391,78 +297,66 @@ export default function MasterData({ defaultTab = 'items', onNavigate = null, cu
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 border-b border-slate-200 pb-3">
         <div>
           <h1 className="text-xl font-bold text-slate-900">
-            {activeTab === 'principals' && 'Principal & Klien Telco'}
             {activeTab === 'projects' && 'Proyek Rollout FO'}
             {activeTab === 'warehouses' && 'Gudang Transit & Staf Yard'}
             {activeTab === 'items' && 'Katalog Material FO'}
-            {activeTab === 'vehicles' && 'Armada Truk Ekspedisi'}
           </h1>
           <p className="text-xs text-slate-500 mt-0.5">
             {activeTab === 'projects' && 'Kelola proyek fiber optic rollout, alokasi wilayah, dan keterhubungan dengan SPK & WO.'}
-            {activeTab === 'principals' && 'Kelola daftar klien telekomunikasi (MyRepublic, Biznet) dan kontak PIC vendor.'}
-            {activeTab === 'warehouses' && 'Kelola gudang transit mobile, penugasan PIC & Staf Storeroom, serta mode sensor gate.'}
-            {activeTab === 'items' && 'Kelola katalog material tiang, kabel, aksesoris, dan spesifikasi tag RFID anti-metal.'}
-            {activeTab === 'vehicles' && 'Kelola armada truk pengangkut tiang, kapasitas muatan, dan data kontak driver.'}
           </p>
         </div>
         <div className="flex items-center gap-2">
-          {activeTab === 'items' && (!currentUser || ['superadmin', 'pm', 'procurement'].includes(currentUser.role)) && (
-            <button
+          {activeTab === 'items' && (!currentUser || ['superadmin', 'pm'].includes(currentUser.role)) && (
+            <FlameButton
               onClick={() => setShowItemModal(true)}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-semibold shadow-xs transition cursor-pointer"
+              height={34}
+              flameColor="blue"
+              showArrow={false}
+              text=""
             >
               <Plus className="w-3.5 h-3.5" />
               <span>Tambah Material Baru</span>
-            </button>
+            </FlameButton>
           )}
           {activeTab === 'warehouses' && (
             <>
               {onNavigate && (
-                <button
+                <FlameButton
                   onClick={() => onNavigate('device-pairing')}
-                  className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg text-xs font-semibold shadow-xs transition cursor-pointer"
+                  height={34}
+                  flameColor="blue"
+                  showArrow={false}
+                  text=""
                 >
                   <Cpu className="w-3.5 h-3.5" />
                   <span>Pairing Reader RFID</span>
-                </button>
+                </FlameButton>
               )}
               {(!currentUser || ['superadmin', 'pm'].includes(currentUser.role)) && (
-                <button
+                <FlameButton
                   onClick={openWarehouseModal}
-                  className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-semibold shadow-xs transition cursor-pointer"
+                  height={34}
+                  flameColor="blue"
+                  showArrow={false}
+                  text=""
                 >
                   <Plus className="w-3.5 h-3.5" />
                   <span>Tambah Gudang Baru</span>
-                </button>
+                </FlameButton>
               )}
             </>
           )}
           {activeTab === 'projects' && (!currentUser || ['superadmin', 'pm'].includes(currentUser.role)) && (
-            <button
+            <FlameButton
               onClick={openProjectModal}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-semibold shadow-xs transition cursor-pointer"
+              height={34}
+              flameColor="blue"
+              showArrow={false}
+              text=""
             >
               <Plus className="w-3.5 h-3.5" />
               <span>Tambah Proyek Baru</span>
-            </button>
-          )}
-          {activeTab === 'principals' && (!currentUser || ['superadmin', 'pm', 'procurement'].includes(currentUser.role)) && (
-            <button
-              onClick={() => setShowPrincipalModal(true)}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-semibold shadow-xs transition cursor-pointer"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <span>Tambah Principal</span>
-            </button>
-          )}
-          {activeTab === 'vehicles' && (!currentUser || ['superadmin', 'pm', 'procurement'].includes(currentUser.role)) && (
-            <button
-              onClick={() => setShowVehicleModal(true)}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-semibold shadow-xs transition cursor-pointer"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <span>Tambah Armada Truk</span>
-            </button>
+            </FlameButton>
           )}
         </div>
       </div>
@@ -471,18 +365,14 @@ export default function MasterData({ defaultTab = 'items', onNavigate = null, cu
       <div className="bg-white p-3 rounded-xl border border-slate-200/90 shadow-xs flex flex-col sm:flex-row justify-between items-stretch sm:items-center gap-3">
         <div className="flex items-center gap-2">
           <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-50 text-slate-700 text-xs font-medium border border-slate-200 font-mono">
-            {activeTab === 'projects' && <FolderKanban className="w-3.5 h-3.5 text-emerald-600" />}
-            {activeTab === 'principals' && <Building2 className="w-3.5 h-3.5 text-emerald-600" />}
-            {activeTab === 'warehouses' && <WhIcon className="w-3.5 h-3.5 text-emerald-600" />}
-            {activeTab === 'items' && <Package className="w-3.5 h-3.5 text-emerald-600" />}
-            {activeTab === 'vehicles' && <Truck className="w-3.5 h-3.5 text-emerald-600" />}
+            {activeTab === 'projects' && <FolderKanban className="w-3.5 h-3.5 text-blue-600" />}
+            {activeTab === 'warehouses' && <WhIcon className="w-3.5 h-3.5 text-blue-600" />}
+            {activeTab === 'items' && <Package className="w-3.5 h-3.5 text-blue-600" />}
             <span>
               Total: {
                 activeTab === 'projects' ? `${projects.length} Proyek` :
-                activeTab === 'principals' ? `${principals.length} Principal` :
                 activeTab === 'warehouses' ? `${warehouses.length} Gudang Transit` :
-                activeTab === 'items' ? `${items.length} Jenis Material` :
-                `${vehicles.length} Armada Truk`
+                `${items.length} Jenis Material`
               }
             </span>
           </span>
@@ -494,10 +384,8 @@ export default function MasterData({ defaultTab = 'items', onNavigate = null, cu
             type="text"
             placeholder={
               activeTab === 'projects' ? 'Cari nama, kode proyek, klien...' :
-              activeTab === 'principals' ? 'Cari nama principal, kontak, kode...' :
               activeTab === 'warehouses' ? 'Cari nama gudang, kode, PIC...' :
-              activeTab === 'items' ? 'Cari nama barang, kode item...' :
-              'Cari plat nomor, driver, ekspedisi...'
+              'Cari nama barang, kode item...'
             }
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
@@ -561,7 +449,7 @@ export default function MasterData({ defaultTab = 'items', onNavigate = null, cu
                           {it.is_metal ? 'Logam / Konduktif' : 'Non-Logam'}
                         </span>
                       </td>
-                      <td className="py-2.5 px-3.5 text-right font-mono font-bold text-emerald-700">
+                      <td className="py-2.5 px-3.5 text-right font-mono font-bold text-blue-700">
                         {it.rfid_tags_count ?? 0} Tag
                       </td>
                     </tr>
@@ -602,7 +490,7 @@ export default function MasterData({ defaultTab = 'items', onNavigate = null, cu
                     <tr key={wh.id} className="hover:bg-slate-50/80 transition">
                       <td className="py-2.5 px-3.5">
                         <div className="font-bold text-slate-900">{wh.name}</div>
-                        <span className="font-mono text-[10px] text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200">
+                        <span className="font-mono text-[10px] text-blue-700 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200">
                           {wh.code}
                         </span>
                       </td>
@@ -634,7 +522,7 @@ export default function MasterData({ defaultTab = 'items', onNavigate = null, cu
                       <td className="py-2.5 px-3.5">
                         {wh.pic ? (
                           <div className="flex items-center gap-1.5">
-                            <UserCheck className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                            <UserCheck className="w-3.5 h-3.5 text-blue-600 shrink-0" />
                             <div>
                               <div className="font-bold text-slate-800">{wh.pic.name}</div>
                               {wh.phone && <div className="text-[10px] text-slate-400 font-mono">{wh.phone}</div>}
@@ -676,20 +564,23 @@ export default function MasterData({ defaultTab = 'items', onNavigate = null, cu
                       </td>
                       <td className="py-2.5 px-3.5 text-center">
                         <span className={`inline-block px-2 py-0.5 rounded-full font-bold text-[10px] ${
-                          wh.is_active ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-200 text-slate-600'
+                          wh.is_active ? 'bg-blue-100 text-blue-800' : 'bg-slate-200 text-slate-600'
                         }`}>
                           {wh.is_active ? 'AKTIF' : 'NON-AKTIF'}
                         </span>
                       </td>
                       <td className="py-2.5 px-3.5 text-right">
                         {(!currentUser || ['superadmin', 'pm'].includes(currentUser.role)) && (
-                          <button
+                          <FlameButton
                             onClick={() => openEditWarehouse(wh)}
-                            className="inline-flex items-center gap-1 px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-bold transition cursor-pointer"
+                            height={30}
+                            flameColor="blue"
+                            showArrow={false}
+                            text=""
                           >
                             <Edit2 className="w-3 h-3" />
                             <span>Atur Staf</span>
-                          </button>
+                          </FlameButton>
                         )}
                       </td>
                     </tr>
@@ -710,7 +601,6 @@ export default function MasterData({ defaultTab = 'items', onNavigate = null, cu
                 <tr className="bg-slate-50/80 border-b border-slate-200 text-slate-600 font-bold uppercase tracking-wider text-[10px]">
                   <th className="py-3 px-3.5">Kode Proyek</th>
                   <th className="py-3 px-3.5">Nama Proyek</th>
-                  <th className="py-3 px-3.5">Principal Client</th>
                   <th className="py-3 px-3.5">Lokasi Wilayah</th>
                   <th className="py-3 px-3.5 text-center">Status</th>
                   <th className="py-3 px-3.5 text-right">Work Orders</th>
@@ -728,137 +618,15 @@ export default function MasterData({ defaultTab = 'items', onNavigate = null, cu
                     <tr key={pr.id} className="hover:bg-slate-50/80 transition">
                       <td className="py-2.5 px-3.5 font-mono font-bold text-slate-900">{pr.code}</td>
                       <td className="py-2.5 px-3.5 font-bold text-slate-800">{pr.name}</td>
-                      <td className="py-2.5 px-3.5 font-medium text-slate-700">{pr.principal?.name || '-'}</td>
+                      <td className="py-2.5 px-3.5 font-medium text-slate-700">{'-'}</td>
                       <td className="py-2.5 px-3.5 text-slate-600">{pr.location || '-'}</td>
                       <td className="py-2.5 px-3.5 text-center">
-                        <span className="px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 font-bold text-[10px] uppercase">
+                        <span className="px-2.5 py-0.5 rounded-full bg-blue-100 text-blue-800 font-bold text-[10px] uppercase">
                           {pr.status}
                         </span>
                       </td>
                       <td className="py-2.5 px-3.5 text-right font-mono font-bold text-slate-800">
                         {pr.work_orders_count ?? 0} WO
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
-      {/* Tab 4: Principals Table */}
-      {activeTab === 'principals' && (
-        <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs border-collapse">
-              <thead>
-                <tr className="bg-slate-50/80 border-b border-slate-200 text-slate-600 font-bold uppercase tracking-wider text-[10px]">
-                  <th className="py-3 px-3.5">Kode</th>
-                  <th className="py-3 px-3.5">Nama Principal Vendor</th>
-                  <th className="py-3 px-3.5">PIC & Kontak</th>
-                  <th className="py-3 px-3.5">Email</th>
-                  <th className="py-3 px-3.5">Alamat Kantor / Yard</th>
-                  <th className="py-3 px-3.5 text-right">Proyek & Kontrak</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {filteredPrincipals.length === 0 ? (
-                  <tr>
-                    <td colSpan={6} className="py-12 text-center text-slate-400">
-                      Tidak ada principal yang sesuai.
-                    </td>
-                  </tr>
-                ) : (
-                  filteredPrincipals.map((p) => (
-                    <tr key={p.id} className="hover:bg-slate-50/80 transition">
-                      <td className="py-2.5 px-3.5 font-mono font-bold text-blue-700">
-                        <span className="px-2 py-0.5 bg-blue-50 border border-blue-200 rounded">
-                          {p.code}
-                        </span>
-                      </td>
-                      <td className="py-2.5 px-3.5 font-bold text-slate-900">{p.name}</td>
-                      <td className="py-2.5 px-3.5 text-slate-700">
-                        <strong>{p.contact_person || '-'}</strong>
-                        <span className="block text-[11px] text-slate-400 font-mono">{p.phone || '-'}</span>
-                      </td>
-                      <td className="py-2.5 px-3.5 text-slate-600 font-mono">{p.email || '-'}</td>
-                      <td className="py-2.5 px-3.5 text-slate-600 max-w-xs truncate">{p.address || '-'}</td>
-                      <td className="py-2.5 px-3.5 text-right font-mono text-xs">
-                        <span className="font-bold text-emerald-700">{p.spks_count ?? 0} SPK</span>
-                        <span className="text-slate-400"> · </span>
-                        <span className="font-bold text-blue-700">{p.projects_count ?? 0} Proyek</span>
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
-      {/* Tab 5: Armada Truk & Ekspedisi Table */}
-      {activeTab === 'vehicles' && (
-        <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs border-collapse">
-              <thead>
-                <tr className="bg-slate-50/80 border-b border-slate-200 text-slate-600 font-bold uppercase tracking-wider text-[10px]">
-                  <th className="py-3 px-3.5">Nomor Polisi / Plat</th>
-                  <th className="py-3 px-3.5">Tipe Truk</th>
-                  <th className="py-3 px-3.5">Driver / Supir</th>
-                  <th className="py-3 px-3.5">Perusahaan Ekspedisi / Vendor</th>
-                  <th className="py-3 px-3.5 text-center">Kapasitas Tiang</th>
-                  <th className="py-3 px-3.5">Status Armada</th>
-                  <th className="py-3 px-3.5">Catatan</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {filteredVehicles.length === 0 ? (
-                  <tr>
-                    <td colSpan={7} className="py-12 text-center text-slate-400">
-                      Tidak ada armada truk yang sesuai.
-                    </td>
-                  </tr>
-                ) : (
-                  filteredVehicles.map((v) => (
-                    <tr key={v.id} className="hover:bg-slate-50/80 transition">
-                      <td className="py-2.5 px-3.5 font-mono font-bold text-slate-900">
-                        <span className="px-2.5 py-1 bg-slate-900 text-amber-400 rounded-lg border border-slate-800">
-                          {v.plate_number}
-                        </span>
-                      </td>
-                      <td className="py-2.5 px-3.5">
-                        <span className="capitalize px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 font-semibold text-[11px]">
-                          {v.vehicle_type?.replace('_', ' ')}
-                        </span>
-                      </td>
-                      <td className="py-2.5 px-3.5 text-slate-800 font-semibold">
-                        <div>{v.driver_name || '-'}</div>
-                        {v.driver_phone && (
-                          <div className="text-[11px] text-slate-400 font-mono">{v.driver_phone}</div>
-                        )}
-                      </td>
-                      <td className="py-2.5 px-3.5 text-slate-700 font-medium">
-                        {v.transporter_name || 'Internal MOSA'}
-                      </td>
-                      <td className="py-2.5 px-3.5 text-center font-mono font-bold text-slate-800">
-                        {v.max_pole_capacity} Batang
-                      </td>
-                      <td className="py-2.5 px-3.5">
-                        {v.is_active ? (
-                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                            Aktif Beroperasi
-                          </span>
-                        ) : (
-                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-rose-50 text-rose-700 border border-rose-200">
-                            Nonaktif
-                          </span>
-                        )}
-                      </td>
-                      <td className="py-2.5 px-3.5 text-slate-500 text-[11px]">
-                        {v.notes || '-'}
                       </td>
                     </tr>
                   ))
@@ -961,146 +729,29 @@ export default function MasterData({ defaultTab = 'items', onNavigate = null, cu
                     type="checkbox"
                     checked={newItem.is_metal}
                     onChange={(e) => setNewItem({ ...newItem, is_metal: e.target.checked })}
-                    className="rounded text-emerald-600 w-4 h-4"
+                    className="rounded text-blue-600 w-4 h-4"
                   />
                   <span>Material Logam (Tag Anti-Metal WZ-Y258)</span>
                 </label>
               </div>
               <div className="flex justify-end gap-2 pt-4 border-t border-slate-100">
-                <button
+                <FlameButton
                   type="button"
                   onClick={() => setShowItemModal(false)}
-                  className="px-4 py-2 border border-slate-300 rounded-xl text-slate-600 hover:bg-slate-50 font-bold cursor-pointer"
-                >
-                  Batal
-                </button>
-                <button
+                  height={36}
+                  flameColor="blue"
+                  showArrow={false}
+                  text="Batal"
+                  textColor="#475569"
+                  style={{ background: 'transparent', border: '1px solid #cbd5e1', boxShadow: 'none' }}
+                />
+                <FlameButton
                   type="submit"
-                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold shadow cursor-pointer"
-                >
-                  Simpan Material
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-        </Portal>
-      )}
-
-      {/* Modal Tambah Armada Truk */}
-      {showVehicleModal && (
-        <Portal>
-          <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-[100] animate-fade-in overflow-y-auto">
-          <div className="bg-white rounded-3xl p-6 sm:p-8 max-w-2xl w-full space-y-4 shadow-2xl my-8 max-h-[92vh] overflow-y-auto">
-            <div className="flex justify-between items-center border-b border-slate-100 pb-3">
-              <div className="flex items-center gap-2">
-                <Truck className="w-5 h-5 text-emerald-600" />
-                <h2 className="text-base font-bold text-slate-800">Tambah Armada Truk</h2>
-              </div>
-              <button onClick={() => setShowVehicleModal(false)} className="p-1 text-slate-400 hover:text-slate-600 rounded-full">
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <form onSubmit={handleCreateVehicle} className="space-y-3 text-xs">
-              <div>
-                <label className="font-bold text-slate-700 block mb-1">Nomor Polisi (Plat Truk) *</label>
-                <input
-                  type="text"
-                  required
-                  placeholder="e.g. B 9123 FO / L 4421 X"
-                  value={newVehicle.plate_number}
-                  onChange={(e) => setNewVehicle({ ...newVehicle, plate_number: e.target.value.toUpperCase() })}
-                  className="w-full p-2.5 border border-slate-300 rounded-xl font-mono font-bold"
+                  height={36}
+                  flameColor="blue"
+                  showArrow={false}
+                  text="Simpan Material"
                 />
-              </div>
-
-              <div className="grid grid-cols-2 gap-2.5">
-                <div>
-                  <label className="font-bold text-slate-700 block mb-1">Tipe Kendaraan *</label>
-                  <select
-                    value={newVehicle.vehicle_type}
-                    onChange={(e) => setNewVehicle({ ...newVehicle, vehicle_type: e.target.value })}
-                    className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl font-semibold"
-                  >
-                    <option value="pickup">Pickup (Kecil)</option>
-                    <option value="truck_medium">Truk Engkel / Medium</option>
-                    <option value="truck_heavy">Truk Fuso / Berat</option>
-                    <option value="trailer">Trailer Panjang</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="font-bold text-slate-700 block mb-1">Kapasitas Tiang (Batang) *</label>
-                  <input
-                    type="number"
-                    min={1}
-                    required
-                    value={newVehicle.max_pole_capacity}
-                    onChange={(e) => setNewVehicle({ ...newVehicle, max_pole_capacity: Number(e.target.value) })}
-                    className="w-full p-2.5 border border-slate-300 rounded-xl font-semibold"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="font-bold text-slate-700 block mb-1">Nama Supir / Driver</label>
-                <input
-                  type="text"
-                  placeholder="e.g. Suparman"
-                  value={newVehicle.driver_name}
-                  onChange={(e) => setNewVehicle({ ...newVehicle, driver_name: e.target.value })}
-                  className="w-full p-2.5 border border-slate-300 rounded-xl font-semibold"
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-2.5">
-                <div>
-                  <label className="font-bold text-slate-700 block mb-1">No HP / WhatsApp Supir</label>
-                  <input
-                    type="text"
-                    placeholder="08123456789"
-                    value={newVehicle.driver_phone}
-                    onChange={(e) => setNewVehicle({ ...newVehicle, driver_phone: e.target.value })}
-                    className="w-full p-2.5 border border-slate-300 rounded-xl"
-                  />
-                </div>
-                <div>
-                  <label className="font-bold text-slate-700 block mb-1">Vendor Ekspedisi</label>
-                  <input
-                    type="text"
-                    placeholder="e.g. PT Trans Logistik"
-                    value={newVehicle.transporter_name}
-                    onChange={(e) => setNewVehicle({ ...newVehicle, transporter_name: e.target.value })}
-                    className="w-full p-2.5 border border-slate-300 rounded-xl"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="font-bold text-slate-700 block mb-1">Catatan Tambahan</label>
-                <textarea
-                  rows={2}
-                  placeholder="Kondisi bak truk / ketentuan izin pergerakan..."
-                  value={newVehicle.notes}
-                  onChange={(e) => setNewVehicle({ ...newVehicle, notes: e.target.value })}
-                  className="w-full p-2 border border-slate-300 rounded-xl"
-                />
-              </div>
-
-              <div className="flex justify-end gap-2 pt-4 border-t border-slate-100">
-                <button
-                  type="button"
-                  onClick={() => setShowVehicleModal(false)}
-                  className="px-4 py-2 border border-slate-300 rounded-xl text-slate-600 hover:bg-slate-50 font-bold cursor-pointer"
-                >
-                  Batal
-                </button>
-                <button
-                  type="submit"
-                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold shadow cursor-pointer"
-                >
-                  Simpan Truk
-                </button>
               </div>
             </form>
           </div>
@@ -1115,7 +766,7 @@ export default function MasterData({ defaultTab = 'items', onNavigate = null, cu
           <div className="bg-white rounded-3xl p-6 sm:p-8 max-w-3xl w-full space-y-4 shadow-2xl my-8 max-h-[92vh] overflow-y-auto">
             <div className="flex justify-between items-center border-b border-slate-100 pb-3">
               <div className="flex items-center gap-2">
-                <FolderKanban className="w-5 h-5 text-emerald-600" />
+                <FolderKanban className="w-5 h-5 text-blue-600" />
                 <h2 className="text-base font-bold text-slate-800">Tambah Proyek Rollout FO Baru</h2>
               </div>
               <button onClick={() => setShowProjectModal(false)} className="p-1 text-slate-400 hover:text-slate-600 rounded-full">
@@ -1125,18 +776,6 @@ export default function MasterData({ defaultTab = 'items', onNavigate = null, cu
 
             <form onSubmit={handleCreateProject} className="space-y-3 text-xs">
               <div>
-                <label className="font-bold text-slate-700 block mb-1">Principal Vendor / Client *</label>
-                <select
-                  required
-                  value={newProject.principal_id}
-                  onChange={(e) => setNewProject({ ...newProject, principal_id: e.target.value })}
-                  className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl font-semibold"
-                >
-                  <option value="">-- Pilih Principal Klien --</option>
-                  {principals.map((p) => (
-                    <option key={p.id} value={p.id}>{p.name} ({p.code})</option>
-                  ))}
-                </select>
               </div>
 
               <div className="grid grid-cols-2 gap-2.5">
@@ -1202,126 +841,21 @@ export default function MasterData({ defaultTab = 'items', onNavigate = null, cu
               </div>
 
               <div className="flex justify-end gap-2 pt-4 border-t border-slate-100">
-                <button
+                <FlameButton
                   type="button"
                   onClick={() => setShowProjectModal(false)}
-                  className="px-4 py-2 border border-slate-300 rounded-xl text-slate-600 hover:bg-slate-50 font-bold cursor-pointer"
-                >
-                  Batal
-                </button>
-                <button
-                  type="submit"
-                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold shadow cursor-pointer"
-                >
-                  Simpan Proyek Baru
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-        </Portal>
-      )}
-
-      {/* Modal Tambah Principal Baru */}
-      {showPrincipalModal && (
-        <Portal>
-          <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-[100] animate-fade-in overflow-y-auto">
-          <div className="bg-white rounded-3xl p-6 sm:p-8 max-w-2xl w-full space-y-4 shadow-2xl my-8 max-h-[92vh] overflow-y-auto">
-            <div className="flex justify-between items-center border-b border-slate-100 pb-3">
-              <div className="flex items-center gap-2">
-                <Building2 className="w-5 h-5 text-emerald-600" />
-                <h2 className="text-base font-bold text-slate-800">Tambah Principal Vendor / Klien</h2>
-              </div>
-              <button onClick={() => setShowPrincipalModal(false)} className="p-1 text-slate-400 hover:text-slate-600 rounded-full">
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <form onSubmit={handleCreatePrincipal} className="space-y-3 text-xs">
-              <div className="grid grid-cols-3 gap-2.5">
-                <div className="col-span-2">
-                  <label className="font-bold text-slate-700 block mb-1">Nama Perusahaan / Klien *</label>
-                  <input
-                    type="text"
-                    required
-                    placeholder="e.g. PT MyRepublic Indonesia"
-                    value={newPrincipal.name}
-                    onChange={(e) => setNewPrincipal({ ...newPrincipal, name: e.target.value })}
-                    className="w-full p-2.5 border border-slate-300 rounded-xl font-semibold"
-                  />
-                </div>
-                <div>
-                  <label className="font-bold text-slate-700 block mb-1">Kode Singkat *</label>
-                  <input
-                    type="text"
-                    required
-                    placeholder="e.g. MYREP"
-                    value={newPrincipal.code}
-                    onChange={(e) => setNewPrincipal({ ...newPrincipal, code: e.target.value.toUpperCase() })}
-                    className="w-full p-2.5 border border-slate-300 rounded-xl font-mono font-bold"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2.5">
-                <div>
-                  <label className="font-bold text-slate-700 block mb-1">Nama PIC Vendor</label>
-                  <input
-                    type="text"
-                    placeholder="e.g. Rian Hidayat"
-                    value={newPrincipal.contact_person}
-                    onChange={(e) => setNewPrincipal({ ...newPrincipal, contact_person: e.target.value })}
-                    className="w-full p-2.5 border border-slate-300 rounded-xl"
-                  />
-                </div>
-                <div>
-                  <label className="font-bold text-slate-700 block mb-1">No. Telepon / WA</label>
-                  <input
-                    type="text"
-                    placeholder="021-50505050"
-                    value={newPrincipal.phone}
-                    onChange={(e) => setNewPrincipal({ ...newPrincipal, phone: e.target.value })}
-                    className="w-full p-2.5 border border-slate-300 rounded-xl font-mono"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="font-bold text-slate-700 block mb-1">Email Resmi</label>
-                <input
-                  type="email"
-                  placeholder="vendor.ops@myrepublic.co.id"
-                  value={newPrincipal.email}
-                  onChange={(e) => setNewPrincipal({ ...newPrincipal, email: e.target.value })}
-                  className="w-full p-2.5 border border-slate-300 rounded-xl"
+                  height={36}
+                  flameColor="blue"
+                  showArrow={false}
+                  text="Batal"
                 />
-              </div>
-
-              <div>
-                <label className="font-bold text-slate-700 block mb-1">Alamat Kantor / Yard</label>
-                <textarea
-                  rows={2}
-                  placeholder="Alamat kantor pusat atau lokasi yard pabrik..."
-                  value={newPrincipal.address}
-                  onChange={(e) => setNewPrincipal({ ...newPrincipal, address: e.target.value })}
-                  className="w-full p-2 border border-slate-300 rounded-xl"
-                />
-              </div>
-
-              <div className="flex justify-end gap-2 pt-4 border-t border-slate-100">
-                <button
-                  type="button"
-                  onClick={() => setShowPrincipalModal(false)}
-                  className="px-4 py-2 border border-slate-300 rounded-xl text-slate-600 hover:bg-slate-50 font-bold cursor-pointer"
-                >
-                  Batal
-                </button>
-                <button
+                <FlameButton
                   type="submit"
-                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold shadow cursor-pointer"
-                >
-                  Simpan Principal
-                </button>
+                  height={36}
+                  flameColor="blue"
+                  showArrow={false}
+                  text="Simpan Proyek Baru"
+                />
               </div>
             </form>
           </div>
@@ -1336,7 +870,7 @@ export default function MasterData({ defaultTab = 'items', onNavigate = null, cu
           <div className="bg-white rounded-3xl p-6 sm:p-8 max-w-3xl w-full space-y-4 shadow-2xl my-8 max-h-[92vh] overflow-y-auto">
             <div className="flex justify-between items-center border-b border-slate-100 pb-3">
               <div className="flex items-center gap-2">
-                <WhIcon className="w-5 h-5 text-emerald-600" />
+                <WhIcon className="w-5 h-5 text-blue-600" />
                 <h2 className="text-base font-bold text-slate-800">Tambah Gudang Transit & Staf Yard</h2>
               </div>
               <button onClick={() => setShowWarehouseModal(false)} className="p-1 text-slate-400 hover:text-slate-600 rounded-full">
@@ -1505,7 +1039,7 @@ export default function MasterData({ defaultTab = 'items', onNavigate = null, cu
                                 });
                               }
                             }}
-                            className="rounded text-emerald-600 w-4 h-4"
+                            className="rounded text-blue-600 w-4 h-4"
                           />
                           <span className="font-semibold text-slate-800">{u.name}</span>
                           <span className="text-[10px] text-slate-400 font-mono">({u.role})</span>
@@ -1517,19 +1051,21 @@ export default function MasterData({ defaultTab = 'items', onNavigate = null, cu
               </div>
 
               <div className="flex justify-end gap-2 pt-4 border-t border-slate-100">
-                <button
+                <FlameButton
                   type="button"
                   onClick={() => setShowWarehouseModal(false)}
-                  className="px-4 py-2 border border-slate-300 rounded-xl text-slate-600 hover:bg-slate-50 font-bold cursor-pointer"
-                >
-                  Batal
-                </button>
-                <button
+                  height={36}
+                  flameColor="blue"
+                  showArrow={false}
+                  text="Batal"
+                />
+                <FlameButton
                   type="submit"
-                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold shadow cursor-pointer"
-                >
-                  Simpan Gudang Baru
-                </button>
+                  height={36}
+                  flameColor="blue"
+                  showArrow={false}
+                  text="Simpan Gudang Baru"
+                />
               </div>
             </form>
           </div>
@@ -1544,7 +1080,7 @@ export default function MasterData({ defaultTab = 'items', onNavigate = null, cu
           <div className="bg-white rounded-3xl p-6 sm:p-8 max-w-3xl w-full space-y-4 shadow-2xl my-8 max-h-[92vh] overflow-y-auto">
             <div className="flex justify-between items-center border-b border-slate-100 pb-3">
               <div className="flex items-center gap-2">
-                <Edit2 className="w-5 h-5 text-emerald-600" />
+                <Edit2 className="w-5 h-5 text-blue-600" />
                 <h2 className="text-base font-bold text-slate-800">Atur PIC & Staf Gudang ({editingWarehouse.code})</h2>
               </div>
               <button onClick={() => setShowEditWarehouseModal(false)} className="p-1 text-slate-400 hover:text-slate-600 rounded-full">
@@ -1706,7 +1242,7 @@ export default function MasterData({ defaultTab = 'items', onNavigate = null, cu
                               });
                             }
                           }}
-                          className="rounded text-emerald-600 w-4 h-4"
+                          className="rounded text-blue-600 w-4 h-4"
                         />
                         <span className="font-semibold text-slate-800">{u.name}</span>
                         <span className="text-[10px] text-slate-400 font-mono">({u.role})</span>
@@ -1717,19 +1253,21 @@ export default function MasterData({ defaultTab = 'items', onNavigate = null, cu
               </div>
 
               <div className="flex justify-end gap-2 pt-4 border-t border-slate-100">
-                <button
+                <FlameButton
                   type="button"
                   onClick={() => setShowEditWarehouseModal(false)}
-                  className="px-4 py-2 border border-slate-300 rounded-xl text-slate-600 hover:bg-slate-50 font-bold cursor-pointer"
-                >
-                  Batal
-                </button>
-                <button
+                  height={36}
+                  flameColor="blue"
+                  showArrow={false}
+                  text="Batal"
+                />
+                <FlameButton
                   type="submit"
-                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold shadow cursor-pointer"
-                >
-                  Simpan Perubahan
-                </button>
+                  height={36}
+                  flameColor="blue"
+                  showArrow={false}
+                  text="Simpan Perubahan"
+                />
               </div>
             </form>
           </div>

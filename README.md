@@ -1,81 +1,136 @@
 # MOSA WMS RFID
 
-WMS untuk material rollout fiber optic dengan registri EPC, rekonsiliasi delivery dua handheld, kuota BOQ, gate transaction, dan custody reporting.
+Warehouse Management System berbasis RFID UHF untuk material rollout **fiber optic** (tiang, kabel, aksesoris). Dirancang untuk mengelola alur material dari gudang transit lapangan ke titik pemasangan dengan verifikasi RFID real-time.
 
-## Status
+---
 
-Snapshot 12 September 2026. Sistem berada pada tahap implementation/hardening campuran.
+## Fitur Utama
 
-- Dispatch/receiving berbasis EPC: tersedia.
-- Gate dual/single, idempotensi, dan session authorization: tersedia dengan gap otorisasi yang terdokumentasi.
-- Custody append-only: model/API terlindungi; enforcement DB belum mutlak.
-- Anti-clone TID/password/lock/permalock: belum tersedia.
-- Relay fisik dan CCTV nyata: belum diintegrasikan; simulasi logis/marker.
-- Edge offline reliability: known issue pada timer setelah batch pertama.
-- HTTPS/WSS production: perlu hardening deployment.
+| Fitur | Deskripsi |
+|:------|:----------|
+| **Dokumen Barang** | Buat, approve, dan track dokumen penerimaan/pengiriman material |
+| **Pendaftaran Tag RFID** | Enroll tag EPC satu-per-satu atau batch (Ziplock) via UHF Reader |
+| **Master Data** | Katalog material, gudang transit, proyek, principal, armada |
+| **RFID Gate** | Monitor perlintasan real-time + konfigurasi reader UHF |
+| **Laporan** | Audit Trail custody, Stock Opname fisik, Kartu Stok per gudang |
+| **Kelola Pengguna** | Manajemen user & hak akses berbasis role |
 
-## Quick start development
+---
 
-### Backend
+## Struktur Folder
 
-```bash
-cd backend
-composer install
-copy .env.example .env
-php artisan key:generate
-php artisan migrate
-php artisan serve --port=8000 --no-reload
+```
+Mosaik-WMS/
+├── backend/          # Laravel 13 / PHP 8.3 — REST API, business logic, DB
+├── frontend/         # React 18 + Vite — PWA dashboard & operator UI
+├── edge-bridge/      # Node.js 20 — parser reader RFID, WebSocket, offline queue
+├── docker/           # Konfigurasi Nginx, Dockerfile per service
+├── doc/              # Dokumentasi lengkap (lihat doc/README.md)
+├── docker-compose.yml              # macOS/Linux dev
+├── docker-compose.windows-dev.yml  # Windows dev
+└── AGENTS.md         # Aturan agent AI
 ```
 
-### Frontend
+---
+
+## Cara Menjalankan
+
+### Docker (Recommended)
 
 ```bash
-cd frontend
-npm install
-npm run dev
+# 1. Clone / buka folder
+cd Mosaik-WMS
+
+# 2. Buat environment privat dari template, lalu isi secret yang valid
+cp .env.deploy.example .env
+
+# 3. Jalankan service development
+docker compose --env-file .env up -d --build
+
+# 4. Inisialisasi schema dan seed secara eksplisit
+docker compose --env-file .env exec backend php artisan migrate --force
+docker compose --env-file .env exec backend php artisan db:seed --force
+
+# 5. Buka browser
+open http://localhost
 ```
 
-### Edge Bridge
+Untuk production gunakan image immutable dan migration job terpisah:
 
 ```bash
-cd edge-bridge
-npm install
-npm test
-npm start
+docker compose --env-file .env.production \
+       -f docker-compose.production.yml \
+       -f docker-compose.ubuntu-production.yml \
+       up -d --build
 ```
 
-### Docker
+### Login Demo
 
-```bash
-docker compose config
-docker compose up -d --build
+| Role | Email | Password |
+|:-----|:------|:---------|
+| Super Administrator | superadmin@mosa.id | password |
+| Project Manager | pm.budi@mosa.id | password |
+| PIC Lapangan | pic.joko@mosa.id | password |
+
+---
+
+## Alur Penggunaan Sistem
+
+```
+[PM] Buat Dokumen Barang (draft)
+       ↓
+[PM] Approve Dokumen
+       ↓
+[PIC] Assign Tag RFID ke item dokumen
+       ↓
+[Edge Bridge] Reader UHF baca tag di gate
+       ↓
+[Sistem] Validasi & catat GATE_OUT/GATE_IN otomatis
+       ↓
+[PM/SA] Laporan Audit Trail & Stock Opname
 ```
 
-`mosa:clean-init` melakukan reset/truncate. Gunakan hanya pada database development baru; jangan jalankan pada production.
+---
+
+## Stack Teknologi
+
+| Layer | Teknologi |
+|:------|:----------|
+| Frontend | React 18, Vite, TailwindCSS (via vanilla CSS), PWA |
+| Backend | Laravel 13, PHP 8.3, Sanctum, PostgreSQL |
+| Edge | Node.js 20 LTS, WebSocket, TCP parser |
+| Infra | Docker, Nginx, PHP-FPM |
+
+---
 
 ## Dokumentasi
 
-Indeks lengkap: [`doc/README.md`](doc/README.md).
+Indeks lengkap: [`doc/README.md`](doc/README.md)
 
-- [`doc/prd.md`](doc/prd.md) — scope dan status.
-- [`doc/arsitektur.md`](doc/arsitektur.md) — komponen dan topologi.
-- [`doc/api-spec.md`](doc/api-spec.md) — kontrak API.
-- [`doc/schema.md`](doc/schema.md) — database.
-- [`doc/rules.md`](doc/rules.md) — aturan bisnis.
-- [`doc/penggunaan.md`](doc/penggunaan.md) — SOP operator.
-- [`RENCANA_HARDENING_FASE_2.md`](RENCANA_HARDENING_FASE_2.md) — backlog hardening.
+| Dokumen | Isi |
+|:--------|:----|
+| [`doc/cara-penggunaan.md`](doc/cara-penggunaan.md) | Panduan lengkap alur & tombol per role |
+| [`doc/arsitektur.md`](doc/arsitektur.md) | Komponen, topologi, trust boundary |
+| [`doc/schema.md`](doc/schema.md) | Skema database & ERD |
+| [`doc/api-spec.md`](doc/api-spec.md) | Kontrak REST API |
+| [`doc/roles-permissions.md`](doc/roles-permissions.md) | Matriks hak akses per role |
+| [`doc/instalasi-docker-dan-domain.md`](doc/instalasi-docker-dan-domain.md) | Deploy production Ubuntu |
+| [`doc/instalasi-hardware-reader.md`](doc/instalasi-hardware-reader.md) | Setup reader UHF |
 
-## Verification
+---
+
+## Verifikasi
 
 ```bash
-cd backend
-php artisan test
+# Backend tests
+docker exec mosa-backend php artisan test
 
-cd ..\frontend
-npm run build
+# Frontend build
+cd frontend && npm run build
 
-cd ..\edge-bridge
-npm test
+# Edge tests
+cd edge-bridge && npm test
+
+# Docker config check
+docker compose config
 ```
-
-Hasil test/build harus dijalankan ulang pada environment saat ini; README tidak menyimpan angka hasil lama.

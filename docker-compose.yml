@@ -5,7 +5,7 @@ services:
     container_name: mosa-nginx
     restart: unless-stopped
     ports:
-      - "${HTTP_BIND:-0.0.0.0}:${HTTP_PORT:-80}:80"
+      - "${HTTP_BIND:-127.0.0.1}:${HTTP_PORT:-80}:80"
     volumes:
       - ./docker/nginx/default.conf:/etc/nginx/conf.d/default.conf
       - ./frontend/dist:/var/www/frontend/dist
@@ -15,6 +15,11 @@ services:
         condition: service_healthy
       frontend:
         condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1/"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
     networks:
       - mosa-network
 
@@ -40,14 +45,14 @@ services:
     environment:
       APP_ENV: production
       APP_DEBUG: "false"
-      APP_KEY: ${APP_KEY:-base64:4Q2kjvfqIWRa7Nn4Ax8aC38lg2oJhmrDmViBvLkMd1I=}
+      APP_KEY: ${APP_KEY:?APP_KEY is required}
       DB_CONNECTION: pgsql
       DB_HOST: postgres
       DB_PORT: 5432
       DB_DATABASE: mosa_wms
       DB_USERNAME: mosa_user
-      DB_PASSWORD: ${DB_PASSWORD:-default123}
-      WS_CONTROL_SECRET: ${WS_CONTROL_SECRET:-}
+      DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
+      WS_CONTROL_SECRET: ${WS_CONTROL_SECRET:?WS_CONTROL_SECRET is required}
       WS_CONTROL_PILOT_URL: ${WS_CONTROL_PILOT_URL:-}
       WS_CONTROL_PILOT_WAREHOUSE_ID: ${WS_CONTROL_PILOT_WAREHOUSE_ID:-}
       ALLOW_HYBRID_DEVICE: ${ALLOW_HYBRID_DEVICE:-false}
@@ -58,7 +63,7 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    command: sh -c "test -f vendor/autoload.php || composer install --no-dev --no-interaction --prefer-dist --optimize-autoloader --no-progress; php artisan migrate --force && php artisan db:seed --force && exec php-fpm"
+    command: ["php-fpm"]
     healthcheck:
       test: ["CMD-SHELL", "nc -z 127.0.0.1 9000"]
       interval: 5s
@@ -75,7 +80,7 @@ services:
     environment:
       POSTGRES_DB: mosa_wms
       POSTGRES_USER: mosa_user
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-default123}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
     ports:
       - "${POSTGRES_BIND:-127.0.0.1}:${POSTGRES_PORT:-5433}:5432"
     volumes:
@@ -111,21 +116,21 @@ services:
     container_name: mosa-edge-bridge
     restart: unless-stopped
     ports:
-      - "${EDGE_BIND:-0.0.0.0}:2077:2077"
-      - "${EDGE_BIND:-0.0.0.0}:2078:2078"
-      - "${EDGE_BIND:-0.0.0.0}:2079:2079"
+      - "${EDGE_BIND:-127.0.0.1}:2077:2077"
+      - "${EDGE_BIND:-127.0.0.1}:2078:2078"
+      - "${EDGE_BIND:-127.0.0.1}:2079:2079"
     environment:
       - WAREHOUSE_ID=1
       - GATE_ID=GATE-01
       - API_BASE_URL=http://nginx/api
-      - DEVICE_API_TOKEN=02ecacb7ecfdd44f7ce361add14b1706a14c2087c005890c36062df74028bcb9
+      - DEVICE_API_TOKEN=${DEVICE_API_TOKEN:?DEVICE_API_TOKEN is required}
       - TCP_PORT=2077
       - TCP_PORT_B=2079
       - WS_PORT=2078
-      - WS_ALLOWED_ORIGINS=${WS_ALLOWED_ORIGINS:-http://localhost,http://127.0.0.1}
-      - WS_CONTROL_SECRET=${WS_CONTROL_SECRET:-}
-      - WS_DEVICE_CODE=GATE-01
-      - READER_HOST=192.168.1.200
+      - WS_ALLOWED_ORIGINS=${WS_ALLOWED_ORIGINS:?WS_ALLOWED_ORIGINS is required}
+      - WS_CONTROL_SECRET=${WS_CONTROL_SECRET:?WS_CONTROL_SECRET is required}
+      - WS_DEVICE_CODE=${WS_DEVICE_CODE:?WS_DEVICE_CODE is required}
+      - READER_HOST=${READER_HOST:-192.168.1.200}
       - READER_PORT=2022
       - HEARTBEAT_INTERVAL_MS=10000
       - READER_RESPONSE_TIMEOUT_MS=5000
@@ -137,7 +142,7 @@ services:
 
   # 6. Cloudflare Zero Trust Secure Tunnel (Expose Local PC to Custom Domain without Public IP)
   cloudflared:
-    image: cloudflare/cloudflared:latest
+    image: cloudflare/cloudflared:2025.9.1
     container_name: mosa-cloudflared
     restart: unless-stopped
     command: tunnel --no-autoupdate run

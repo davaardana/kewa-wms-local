@@ -21,25 +21,10 @@ class Project extends Model
         'status',
     ];
 
-    public function principal(): BelongsTo
-    {
-        return $this->belongsTo(Principal::class);
-    }
-
     public function warehouses(): BelongsToMany
     {
         return $this->belongsToMany(Warehouse::class, 'project_warehouses')
             ->withPivot('is_primary')
             ->withTimestamps();
-    }
-
-    public function spks(): HasMany
-    {
-        return $this->hasMany(Spk::class);
-    }
-
-    public function workOrders(): HasMany
-    {
-        return $this->hasMany(WorkOrder::class);
     }
 }

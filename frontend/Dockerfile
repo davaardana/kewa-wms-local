@@ -4,13 +4,13 @@ FROM node:20-alpine AS build
 WORKDIR /app
 
 COPY package*.json ./
-RUN npm install
+RUN npm ci
 
 COPY . .
 RUN npm run build
 
-# Stage 2: Serve via Alpine container with static files volume
-FROM alpine:latest
+# Stage 2: Keep the artifact available for the development bind mount.
+FROM alpine:3.20
 WORKDIR /var/www/frontend
 COPY --from=build /app/dist ./dist
 

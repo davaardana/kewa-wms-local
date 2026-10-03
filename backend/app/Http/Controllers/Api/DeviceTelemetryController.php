@@ -4,9 +4,9 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\GateDevice;
+use App\Models\ShippingDocument;
 use App\Models\DeviceHealthIncident;
 use App\Models\Warehouse;
-use App\Models\GateTransaction;
 use App\Rules\EdgeWsUrl;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
@@ -327,14 +327,15 @@ class DeviceTelemetryController extends Controller
     public function config(Request $request): JsonResponse
     {
         $device = $request->attributes->get('gate_device')->load('warehouse');
-        $transactions = GateTransaction::where('warehouse_id', $device->warehouse_id)
-            ->where('status', 'approved')
-            ->where(fn ($query) => $query->whereNull('valid_until')->orWhere('valid_until', '>', Carbon::now()))
-            ->orderBy('id')->limit(2)->get(['id', 'type', 'valid_until']);
+        // Find approved shipping document at this warehouse (at most 1 active)
+        $activeDoc = ShippingDocument::where('warehouse_id', $device->warehouse_id)
+            ->whereIn('status', ['approved', 'in_progress'])
+            ->orderBy('id')
+            ->first(['id', 'document_number', 'type', 'status']);
 
         return response()->json([
-            'device' => $device,
-            'authorized_transaction' => $transactions->count() === 1 ? $transactions->first() : null,
+            'device'               => $device,
+            'authorized_document'  => $activeDoc,
         ]);
     }
 }

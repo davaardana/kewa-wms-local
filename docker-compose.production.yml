@@ -1,0 +1,160 @@
+services:
+  nginx:
+    build:
+      context: .
+      dockerfile: docker/nginx/Dockerfile
+    image: mosa-nginx:${IMAGE_TAG:-production}
+    container_name: mosa-nginx
+    restart: unless-stopped
+    ports:
+      - "${HTTP_BIND:-127.0.0.1}:${HTTP_PORT:-8080}:80"
+    volumes:
+      - backend_storage:/var/www/backend/storage/app/public:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - mosa-network
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: mosa-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_DATABASE:?DB_DATABASE is required}
+      POSTGRES_USER: ${DB_USERNAME:?DB_USERNAME is required}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    networks:
+      - mosa-network
+
+  migrate:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: mosa-backend:${IMAGE_TAG:-production}
+    container_name: mosa-migrate
+    restart: "no"
+    environment: &backend-environment
+      APP_ENV: production
+      APP_DEBUG: "false"
+      APP_KEY: ${APP_KEY:?APP_KEY is required}
+      DB_CONNECTION: pgsql
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_DATABASE: ${DB_DATABASE:?DB_DATABASE is required}
+      DB_USERNAME: ${DB_USERNAME:?DB_USERNAME is required}
+      DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
+      WS_CONTROL_SECRET: ${WS_CONTROL_SECRET:?WS_CONTROL_SECRET is required}
+      WS_CONTROL_PILOT_URL: ${WS_CONTROL_PILOT_URL:-}
+      WS_CONTROL_PILOT_WAREHOUSE_ID: ${WS_CONTROL_PILOT_WAREHOUSE_ID:-}
+      ALLOW_HYBRID_DEVICE: "false"
+    volumes:
+      - backend_storage:/var/www/backend/storage/app/public
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["php", "artisan", "migrate", "--force"]
+    networks:
+      - mosa-network
+
+  seed:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: mosa-backend:${IMAGE_TAG:-production}
+    container_name: mosa-seed
+    restart: "no"
+    profiles: [seed]
+    environment: *backend-environment
+    volumes:
+      - backend_storage:/var/www/backend/storage/app/public
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    command: ["php", "artisan", "db:seed", "--force"]
+    networks:
+      - mosa-network
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: mosa-backend:${IMAGE_TAG:-production}
+    container_name: mosa-backend
+    restart: unless-stopped
+    environment: *backend-environment
+    volumes:
+      - backend_storage:/var/www/backend/storage/app/public
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "php -r '$$socket = @fsockopen(\"127.0.0.1\", 9000, $$errno, $$errstr, 1); exit($$socket ? 0 : 1);'"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    networks:
+      - mosa-network
+
+  edge-bridge:
+    build:
+      context: ./edge-bridge
+      dockerfile: Dockerfile
+    image: mosa-edge-bridge:${IMAGE_TAG:-production}
+    container_name: mosa-edge-bridge
+    restart: unless-stopped
+    profiles: [edge]
+    environment:
+      WAREHOUSE_ID: ${WAREHOUSE_ID:?WAREHOUSE_ID is required}
+      GATE_ID: ${GATE_ID:?GATE_ID is required}
+      API_BASE_URL: ${API_BASE_URL:?API_BASE_URL is required}
+      DEVICE_API_TOKEN: ${DEVICE_API_TOKEN:?DEVICE_API_TOKEN is required}
+      TCP_PORT: ${TCP_PORT:-2077}
+      TCP_PORT_B: ${TCP_PORT_B:-2079}
+      WS_PORT: ${WS_PORT:-2078}
+      WS_ALLOWED_ORIGINS: ${WS_ALLOWED_ORIGINS:?WS_ALLOWED_ORIGINS is required}
+      WS_CONTROL_SECRET: ${WS_CONTROL_SECRET:?WS_CONTROL_SECRET is required}
+      WS_DEVICE_CODE: ${WS_DEVICE_CODE:?WS_DEVICE_CODE is required}
+      READER_HOST: ${READER_HOST:?READER_HOST is required}
+      READER_PORT: ${READER_PORT:-2022}
+      HEARTBEAT_INTERVAL_MS: ${HEARTBEAT_INTERVAL_MS:-10000}
+      READER_RESPONSE_TIMEOUT_MS: ${READER_RESPONSE_TIMEOUT_MS:-5000}
+      RF_POWER_DBM: ${RF_POWER_DBM:-30}
+    depends_on:
+      nginx:
+        condition: service_healthy
+    networks:
+      - mosa-network
+
+  cloudflared:
+    image: cloudflare/cloudflared:2025.9.1
+    container_name: mosa-cloudflared
+    restart: unless-stopped
+    profiles: [tunnel]
+    command: ["tunnel", "--no-autoupdate", "run"]
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:?CLOUDFLARE_TUNNEL_TOKEN is required}
+    depends_on:
+      nginx:
+        condition: service_healthy
+    networks:
+      - mosa-network
+
+volumes:
+  postgres_data:
+  backend_storage:
+
+networks:
+  mosa-network:
+    driver: bridge

@@ -7,9 +7,6 @@ services:
   nginx:
     ports:
       - "127.0.0.1:8080:80"
-  mysql:
-    ports:
-      - "127.0.0.1:3306:3306"
   edge-bridge:
     profiles: [edge]
     ports: []

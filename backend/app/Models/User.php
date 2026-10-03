@@ -41,26 +41,41 @@ class User extends Authenticatable
         return $this->role === 'superadmin';
     }
 
+    /**
+     * Management = superadmin + pm (covers all management-level access)
+     */
     public function isManagement(): bool
     {
-        return in_array($this->role, ['management', 'superadmin']);
+        return in_array($this->role, ['superadmin', 'pm']);
     }
 
+    /**
+     * PM role (also includes superadmin)
+     */
     public function isPm(): bool
     {
         return in_array($this->role, ['pm', 'superadmin']);
     }
 
+    /**
+     * Procurement responsibilities handled by PM in 3-role system
+     */
     public function isProcurement(): bool
     {
-        return in_array($this->role, ['procurement', 'superadmin']);
+        return in_array($this->role, ['pm', 'superadmin']);
     }
 
+    /**
+     * Storeroom responsibilities handled by PM in 3-role system
+     */
     public function isStoreroom(): bool
     {
-        return in_array($this->role, ['storeroom', 'superadmin']);
+        return in_array($this->role, ['pm', 'superadmin']);
     }
 
+    /**
+     * PIC Lapangan role
+     */
     public function isPic(): bool
     {
         return in_array($this->role, ['pic_lapangan', 'superadmin']);

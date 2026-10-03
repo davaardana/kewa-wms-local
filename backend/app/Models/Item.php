@@ -42,16 +42,6 @@ class Item extends Model
         return $this->hasMany(RfidTag::class);
     }
 
-    public function spkItems(): HasMany
-    {
-        return $this->hasMany(SpkItem::class);
-    }
-
-    public function boqItems(): HasMany
-    {
-        return $this->hasMany(BoqItem::class);
-    }
-
     public function custodyLogs(): HasMany
     {
         return $this->hasMany(CustodyLedger::class);

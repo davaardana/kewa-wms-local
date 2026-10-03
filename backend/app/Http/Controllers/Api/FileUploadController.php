@@ -17,7 +17,7 @@ class FileUploadController extends Controller
     {
         $request->validate([
             'file' => 'required|file|mimes:jpg,jpeg,png,webp,pdf,doc,docx|max:10240', // max 10MB
-            'folder' => 'nullable|string|in:spk_documents,delivery_proofs,custody_photos,general',
+            'folder' => 'nullable|string|in:spk_documents,delivery_proofs,custody_photos,general,shipping_documents',
         ]);
 
         $file = $request->file('file');

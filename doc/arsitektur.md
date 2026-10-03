@@ -1,6 +1,6 @@
 # MOSA WMS RFID — Arsitektur Sistem
 
-> Snapshot implementasi: 12 September 2026. Source of truth: routes/controllers/services, migrations, `edge-bridge/src`, dan konfigurasi deployment. Status: **IMPLEMENTED**, **PARTIAL**, **PLANNED**, **KNOWN ISSUE**.
+> Snapshot implementasi: 1 Oktober 2026. Source of truth: routes/controllers/services, migrations, `edge-bridge/src`, dan konfigurasi deployment. Status: **IMPLEMENTED**, **PARTIAL**, **PLANNED**, **KNOWN ISSUE**.
 
 ## Komponen
 
@@ -8,7 +8,7 @@
 |---|---|---|
 | React 18 + Vite PWA | IMPLEMENTED | Dashboard, alur handheld, monitoring, Web Bluetooth pada browser yang didukung. |
 | Laravel 13 / PHP 8.3 | IMPLEMENTED | REST API, Sanctum, state bisnis, approval, custody, reporting. |
-| MySQL 8 | IMPLEMENTED | Data transaksi dan audit. Proteksi append-only DB masih PARTIAL. |
+| PostgreSQL 16 | IMPLEMENTED | Data transaksi dan audit. Proteksi append-only DB masih PARTIAL. |
 | Node.js Edge Bridge | PARTIAL | Parser reader, direction engine, batching, WebSocket lokal, offline queue, telemetry. Ada known issue timer runtime. |
 | Reader HW-VX/RC4 | PARTIAL | Parser tersedia; kompatibilitas dan RF wajib commissioning per model/firmware. |
 | Relay fisik | PLANNED | Saat ini hanya simulasi logis pulse 5 detik. |
@@ -19,7 +19,7 @@
 ```mermaid
 graph LR
     Browser[Browser / PWA] -->|HTTPS + Sanctum| API[Laravel API]
-    API --> DB[(MySQL)]
+    API --> DB[(PostgreSQL)]
     Reader[RFID Reader Gudang] -->|TCP LAN| Edge[Edge Bridge per Gudang]
     Edge -->|HTTPS + Device Token| API
     Browser -->|WSS per perangkat + HMAC Ticket v2| Edge
@@ -117,7 +117,7 @@ Event custody aktif: `STOCK_IN`, `PREPARED`, `GATE_OUT`, `GATE_IN`, `FIELD_RETUR
 
 ## Deployment
 
-Central stack: Nginx, frontend static build, PHP-FPM, MySQL. Edge ditempatkan per gudang. Production wajib HTTPS/WSS, secret acak, private reader network, backup/restore test, dan firewall minimum. Compose saat ini masih mengekspos MySQL serta port Edge dan memakai credential default; gunakan hanya setelah hardening deployment.
+Central stack: Nginx production image, frontend static build, PHP-FPM, dan PostgreSQL internal. Edge ditempatkan per gudang. Production wajib HTTPS/WSS, secret acak, private reader network, backup/restore test, dan firewall minimum. Gunakan `docker-compose.production.yml`; Compose production tidak mempublikasikan PostgreSQL atau port Edge ke host secara default.
 
 ## Gap Produksi
 

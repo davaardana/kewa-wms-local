@@ -2,6 +2,12 @@
 .DS_Store
 Thumbs.db
 
+# Local environment and deployment secrets
+.env
+.env.*
+!.env.example
+!.env.deploy.example
+
 # IDE & Editors
 .idea/
 .vscode/

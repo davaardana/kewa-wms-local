@@ -3,6 +3,8 @@
  * Compatible with Chromium browsers on Android/Desktop.
  */
 
+import { normalizeEpc } from './rfidContract';
+
 class BleReaderService {
   constructor() {
     this.device = null;
@@ -81,7 +83,7 @@ class BleReaderService {
    */
   simulateScan(epc) {
     if (this.onTagScannedCallback) {
-      this.onTagScannedCallback(epc.toUpperCase());
+      this.onTagScannedCallback(normalizeEpc(epc));
     }
   }
 }

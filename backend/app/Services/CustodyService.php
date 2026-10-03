@@ -3,10 +3,8 @@
 namespace App\Services;
 
 use App\Models\CustodyLedger;
-use App\Models\Delivery;
-use App\Models\GateTransaction;
 use App\Models\RfidTag;
-use App\Models\WorkOrder;
+use App\Models\ShippingDocument;
 use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Facades\DB;
@@ -14,17 +12,14 @@ use Illuminate\Support\Facades\DB;
 class CustodyService
 {
     private const EVENT_CONTRACTS = [
-        'TAG_ENROLLED' => ['tag' => 'required', 'refs' => [null]],
-        'STOCK_IN' => ['tag' => 'optional', 'refs' => [null, Delivery::class, GateTransaction::class]],
-        'PREPARED' => ['tag' => 'forbidden', 'refs' => [WorkOrder::class]],
-        'INSTALLED' => ['tag' => 'forbidden', 'refs' => [WorkOrder::class]],
-        'FIELD_RETURN' => ['tag' => 'forbidden', 'refs' => [GateTransaction::class]],
-        'GATE_OUT' => ['tag' => 'required', 'refs' => [GateTransaction::class]],
-        'GATE_IN' => ['tag' => 'required', 'refs' => [GateTransaction::class]],
-        'AUDIT_OPNAME' => ['tag' => 'required', 'refs' => [null]],
-        'DAMAGED_WRITE_OFF' => ['tag' => 'required', 'refs' => [null]],
+        'TAG_ENROLLED'       => ['tag' => 'required', 'refs' => [null]],
+        'STOCK_IN'           => ['tag' => 'optional', 'refs' => [null, ShippingDocument::class]],
+        'GATE_OUT'           => ['tag' => 'required', 'refs' => [ShippingDocument::class]],
+        'GATE_IN'            => ['tag' => 'required', 'refs' => [ShippingDocument::class]],
+        'AUDIT_OPNAME'       => ['tag' => 'required', 'refs' => [null]],
+        'DAMAGED_WRITE_OFF'  => ['tag' => 'required', 'refs' => [null]],
         'TAG_DECOMMISSIONED' => ['tag' => 'required', 'refs' => [null]],
-        'TAG_REACTIVATED' => ['tag' => 'required', 'refs' => [null]],
+        'TAG_REACTIVATED'    => ['tag' => 'required', 'refs' => [null]],
     ];
 
     /**

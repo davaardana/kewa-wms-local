@@ -252,18 +252,18 @@ export default function InstallPwaModal({ isOpen, onClose, triggerInstall, devic
       <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-fade-in overflow-y-auto" onClick={onClose}>
         <div className="bg-slate-900 border border-slate-700 text-slate-100 rounded-3xl max-w-2xl w-full p-6 sm:p-8 shadow-2xl relative overflow-hidden space-y-5 my-8 max-h-[92vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
         {/* Glow Header */}
-        <div className="absolute top-0 right-0 w-48 h-48 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none" />
+        <div className="absolute top-0 right-0 w-48 h-48 bg-blue-500/10 rounded-full blur-3xl pointer-events-none" />
         
         {/* Title Bar */}
         <div className="flex items-start justify-between relative z-10">
           <div className="flex items-center gap-3">
-            <div className="w-11 h-11 rounded-2xl bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 flex items-center justify-center shadow-inner">
+            <div className="w-11 h-11 rounded-2xl bg-blue-500/20 border border-blue-500/30 text-blue-400 flex items-center justify-center shadow-inner">
               <Smartphone className="w-6 h-6 animate-pulse" />
             </div>
             <div>
               <h2 className="text-lg font-bold text-white tracking-tight flex items-center gap-2">
                 <span>Manajer Perangkat & PWA</span>
-                <span className="text-[10px] bg-emerald-500/20 text-emerald-400 font-mono px-2 py-0.5 rounded-full border border-emerald-500/30">v1.0</span>
+                <span className="text-[10px] bg-blue-500/20 text-blue-400 font-mono px-2 py-0.5 rounded-full border border-blue-500/30">v1.0</span>
               </h2>
               <p className="text-xs text-slate-400">
                 Instalasi aplikasi, izin GPS geotagging, notifikasi & sensor lapangan.
@@ -300,7 +300,7 @@ export default function InstallPwaModal({ isOpen, onClose, triggerInstall, devic
                 : 'text-slate-400 hover:text-slate-200'
             }`}
           >
-            <MapPin className="w-3.5 h-3.5 text-emerald-400" />
+            <MapPin className="w-3.5 h-3.5 text-blue-400" />
             <span>GPS, Notifikasi & Sensor</span>
           </button>
         </div>
@@ -311,7 +311,7 @@ export default function InstallPwaModal({ isOpen, onClose, triggerInstall, devic
             <div className="bg-slate-950/80 border border-slate-800 rounded-2xl p-3.5 space-y-2.5 text-xs">
               <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider flex items-center justify-between">
                 <span>Perangkat & Sistem Operasi:</span>
-                <span className="text-emerald-400 font-mono text-[10px] flex items-center gap-1">
+                <span className="text-blue-400 font-mono text-[10px] flex items-center gap-1">
                   <Sparkles className="w-3 h-3" /> Auto-Detect
                 </span>
               </div>
@@ -319,9 +319,9 @@ export default function InstallPwaModal({ isOpen, onClose, triggerInstall, devic
               <div className="grid grid-cols-2 gap-2 text-slate-300">
                 <div className="bg-slate-900/90 border border-slate-800 p-2 rounded-xl flex items-center gap-2">
                   {deviceInfo.isMobile ? (
-                    <Smartphone className="w-4 h-4 text-emerald-400 shrink-0" />
+                    <Smartphone className="w-4 h-4 text-blue-400 shrink-0" />
                   ) : (
-                    <Laptop className="w-4 h-4 text-emerald-400 shrink-0" />
+                    <Laptop className="w-4 h-4 text-blue-400 shrink-0" />
                   )}
                   <div className="overflow-hidden">
                     <span className="block text-[10px] text-slate-400 font-medium">Sistem Operasi</span>
@@ -338,20 +338,20 @@ export default function InstallPwaModal({ isOpen, onClose, triggerInstall, devic
                 </div>
 
                 <div className="bg-slate-900/90 border border-slate-800 p-2 rounded-xl flex items-center gap-2">
-                  <Bluetooth className={`w-4 h-4 shrink-0 ${deviceInfo.supportsBluetooth ? 'text-emerald-400' : 'text-amber-400'}`} />
+                  <Bluetooth className={`w-4 h-4 shrink-0 ${deviceInfo.supportsBluetooth ? 'text-blue-400' : 'text-amber-400'}`} />
                   <div className="overflow-hidden">
                     <span className="block text-[10px] text-slate-400 font-medium">Web Bluetooth BLE</span>
-                    <span className={`font-semibold text-[11px] truncate block ${deviceInfo.supportsBluetooth ? 'text-emerald-300' : 'text-amber-300'}`}>
+                    <span className={`font-semibold text-[11px] truncate block ${deviceInfo.supportsBluetooth ? 'text-blue-300' : 'text-amber-300'}`}>
                       {deviceInfo.supportsBluetooth ? 'Ready (Scanner RS01)' : 'Tidak Tersedia'}
                     </span>
                   </div>
                 </div>
 
                 <div className="bg-slate-900/90 border border-slate-800 p-2 rounded-xl flex items-center gap-2">
-                  <Wifi className={`w-4 h-4 shrink-0 ${deviceInfo.isOnline ? 'text-emerald-400' : 'text-rose-400'}`} />
+                  <Wifi className={`w-4 h-4 shrink-0 ${deviceInfo.isOnline ? 'text-blue-400' : 'text-rose-400'}`} />
                   <div className="overflow-hidden">
                     <span className="block text-[10px] text-slate-400 font-medium">Status Jaringan</span>
-                    <span className={`font-semibold text-[11px] truncate block ${deviceInfo.isOnline ? 'text-emerald-300' : 'text-rose-300'}`}>
+                    <span className={`font-semibold text-[11px] truncate block ${deviceInfo.isOnline ? 'text-blue-300' : 'text-rose-300'}`}>
                       {deviceInfo.isOnline ? 'Online (Terhubung)' : 'Offline'}
                     </span>
                   </div>
@@ -361,11 +361,11 @@ export default function InstallPwaModal({ isOpen, onClose, triggerInstall, devic
 
             {/* Installation Actions */}
             {deviceInfo.isStandalone ? (
-              <div className="bg-emerald-950/50 border border-emerald-700/60 p-4 rounded-2xl flex items-center gap-3 text-emerald-200">
-                <CheckCircle2 className="w-6 h-6 text-emerald-400 shrink-0" />
+              <div className="bg-blue-950/50 border border-blue-700/60 p-4 rounded-2xl flex items-center gap-3 text-blue-200">
+                <CheckCircle2 className="w-6 h-6 text-blue-400 shrink-0" />
                 <div>
-                  <div className="font-bold text-sm text-emerald-100">Aplikasi Sudah Terpasang!</div>
-                  <div className="text-xs text-emerald-300/80">
+                  <div className="font-bold text-sm text-blue-100">Aplikasi Sudah Terpasang!</div>
+                  <div className="text-xs text-blue-300/80">
                     Anda sedang menjalankan MOSA WMS dalam mode aplikasi standalone di {deviceInfo.os}.
                   </div>
                 </div>
@@ -374,7 +374,7 @@ export default function InstallPwaModal({ isOpen, onClose, triggerInstall, devic
               <div className="space-y-2">
                 <button
                   onClick={triggerInstall}
-                  className="w-full py-3.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white rounded-2xl font-bold text-sm shadow-lg shadow-emerald-900/40 flex items-center justify-center gap-2.5 transition active:scale-[0.99] cursor-pointer"
+                  className="w-full py-3.5 bg-gradient-to-r from-blue-600 to-teal-600 hover:from-blue-500 hover:to-blue-500 text-white rounded-2xl font-bold text-sm shadow-lg shadow-blue-900/40 flex items-center justify-center gap-2.5 transition active:scale-[0.99] cursor-pointer"
                 >
                   <Download className="w-5 h-5" />
                   <span>Install Aplikasi Sekarang (1-Klik)</span>
@@ -397,7 +397,7 @@ export default function InstallPwaModal({ isOpen, onClose, triggerInstall, devic
                   <li className="flex items-start gap-2">
                     <span className="w-5 h-5 rounded-full bg-slate-800 text-slate-300 flex items-center justify-center text-[10px] font-bold shrink-0 mt-0.5">2</span>
                     <span className="flex items-center gap-1">
-                      Pilih <PlusSquare className="w-3.5 h-3.5 text-emerald-400 inline mx-0.5" /> <strong>Add to Home Screen</strong>.
+                      Pilih <PlusSquare className="w-3.5 h-3.5 text-blue-400 inline mx-0.5" /> <strong>Add to Home Screen</strong>.
                     </span>
                   </li>
                   <li className="flex items-start gap-2">
@@ -409,7 +409,7 @@ export default function InstallPwaModal({ isOpen, onClose, triggerInstall, devic
             ) : (
               <div className="bg-slate-950/90 border border-slate-800 rounded-2xl p-4 space-y-2.5">
                 <div className="font-bold text-xs text-slate-200 flex items-center gap-2">
-                  <ExternalLink className="w-4 h-4 text-emerald-400" />
+                  <ExternalLink className="w-4 h-4 text-blue-400" />
                   <span>Cara Pasang di Browser {deviceInfo.browser}:</span>
                 </div>
                 <p className="text-xs text-slate-400 leading-relaxed">
@@ -437,27 +437,27 @@ export default function InstallPwaModal({ isOpen, onClose, triggerInstall, devic
             <div className="bg-slate-950/90 border border-slate-800 rounded-2xl p-3.5 space-y-2.5">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2 font-bold text-slate-200">
-                  <MapPin className="w-4 h-4 text-emerald-400" />
+                  <MapPin className="w-4 h-4 text-blue-400" />
                   <span>1. GPS & Geotagging Lapangan</span>
                 </div>
                 <button
                   onClick={requestGeotag}
                   disabled={geoState.loading}
-                  className="px-2.5 py-1 bg-emerald-600/30 hover:bg-emerald-600/50 border border-emerald-500/50 text-emerald-300 rounded-lg text-[11px] font-semibold transition cursor-pointer"
+                  className="px-2.5 py-1 bg-blue-600/30 hover:bg-blue-600/50 border border-blue-500/50 text-blue-300 rounded-lg text-[11px] font-semibold transition cursor-pointer"
                 >
                   {geoState.loading ? 'Mencari Satelit GPS...' : 'Uji Ambil Titik GPS'}
                 </button>
               </div>
 
               {geoState.data ? (
-                <div className="bg-slate-900/90 border border-emerald-500/40 rounded-xl p-2.5 grid grid-cols-3 gap-2 font-mono text-[11px] text-slate-300">
+                <div className="bg-slate-900/90 border border-blue-500/40 rounded-xl p-2.5 grid grid-cols-3 gap-2 font-mono text-[11px] text-slate-300">
                   <div>
                     <span className="text-[10px] text-slate-400 block">Latitude</span>
-                    <span className="text-emerald-300 font-bold">{geoState.data.lat}</span>
+                    <span className="text-blue-300 font-bold">{geoState.data.lat}</span>
                   </div>
                   <div>
                     <span className="text-[10px] text-slate-400 block">Longitude</span>
-                    <span className="text-emerald-300 font-bold">{geoState.data.lng}</span>
+                    <span className="text-blue-300 font-bold">{geoState.data.lng}</span>
                   </div>
                   <div>
                     <span className="text-[10px] text-slate-400 block">Akurasi GPS</span>
@@ -508,7 +508,7 @@ export default function InstallPwaModal({ isOpen, onClose, triggerInstall, devic
               </div>
               <div className="flex items-center justify-between text-[11px]">
                 <span className="text-slate-400">Status Izin:</span>
-                <span className={`font-semibold font-mono ${deviceInfo.notificationPermission === 'granted' ? 'text-emerald-400' : 'text-amber-400'}`}>
+                <span className={`font-semibold font-mono ${deviceInfo.notificationPermission === 'granted' ? 'text-blue-400' : 'text-amber-400'}`}>
                   {deviceInfo.notificationPermission === 'granted' ? 'Diizinkan (Granted)' : 'Belum Diizinkan (' + deviceInfo.notificationPermission + ')'}
                 </span>
               </div>
@@ -517,7 +517,7 @@ export default function InstallPwaModal({ isOpen, onClose, triggerInstall, devic
             {/* 4. Audio & Vibration Haptic Feedback */}
             <div className="bg-slate-950/90 border border-slate-800 rounded-2xl p-3.5 flex items-center justify-between">
               <div className="flex items-center gap-2 font-bold text-slate-200">
-                <Volume2 className="w-4 h-4 text-emerald-400" />
+                <Volume2 className="w-4 h-4 text-blue-400" />
                 <div>
                   <span>4. Audio Beep & Getar (Haptic)</span>
                   <span className="block font-normal text-[10px] text-slate-400">Feedback saat scan tag RFID berhasil</span>
@@ -536,7 +536,7 @@ export default function InstallPwaModal({ isOpen, onClose, triggerInstall, devic
         {/* Footer info */}
         <div className="pt-2 border-t border-slate-800 flex items-center justify-between text-[11px] text-slate-400">
           <span className="flex items-center gap-1.5">
-            <Radio className="w-3.5 h-3.5 text-emerald-400" />
+            <Radio className="w-3.5 h-3.5 text-blue-400" />
             MOSA WMS • Hardware Sensor Integrations
           </span>
           <button
