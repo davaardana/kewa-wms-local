@@ -20,49 +20,124 @@ class GateEventController extends Controller
      */
     public function handleGateEvent(Request $request): JsonResponse
     {
+        try {
+            $device = $request->attributes->get('gate_device');
+            $request->merge([
+                'warehouse_id' => $device->warehouse_id,
+                'gate_id'      => $device->device_code,
+                'epc_list'     => collect($request->input('epc_list', []))
+                    ->map(fn ($item) => strtoupper(trim(is_array($item) ? ($item['epc'] ?? '') : (string) $item)))
+                    ->filter()
+                    ->values()
+                    ->all(),
+                'raw_payload'  => [
+                    ...$request->input('raw_payload', []),
+                    'device' => $device->device_code,
+                ],
+            ]);
+
+            $validated = $request->validate([
+                'event_id'             => 'required|uuid',
+                'observed_at'          => 'required|date|before_or_equal:now',
+                'warehouse_id'         => 'required|exists:warehouses,id',
+                'gate_id'              => 'nullable|string|max:50',
+                'antenna_sequence'     => 'required|in:A_TO_B,B_TO_A,SINGLE_ANTENNA',
+                'direction'            => 'nullable|in:OUT,IN',
+                'epc_list'             => 'required|array|min:1|max:100',
+                'epc_list.*'           => ['string', 'min:8', 'max:64', 'regex:/^[0-9A-Fa-f]+$/'],
+                'cctv_snapshot_path'   => 'nullable|string',
+                'shipping_document_id' => 'nullable|exists:shipping_documents,id',
+                'raw_payload'          => 'nullable|array',
+            ]);
+
+            // Primary gate processing via GateEngineService
+            $result = $this->gateEngine->processGateEvent($validated, $device);
+
+            // Also update ShippingDocumentTag.status='scanned' for doc progress tracking
+            $direction = $validated['direction']
+                ?? ($validated['antenna_sequence'] === 'A_TO_B' ? 'OUT' : 'IN');
+
+            $shippingMatch = ShippingDocumentController::matchGateEpcs(
+                $validated['warehouse_id'],
+                $validated['epc_list'],
+                $direction
+            );
+            $result['shipping_match'] = $shippingMatch;
+
+            // Real-time broadcast to Edge Bridge WebSocket clients (Dashboard)
+            self::notifyEdgeBridge([
+                'type' => 'GATE_EVENT',
+                'event_id' => $validated['event_id'],
+                'warehouse_id' => $validated['warehouse_id'],
+                'gate_id' => $validated['gate_id'],
+                'direction' => $direction,
+                'status' => $result['status'] ?? 'PROCESSED',
+                'unlock_gate' => $result['unlock_gate'] ?? false,
+                'epc_list' => $validated['epc_list'],
+                'shipping_match' => $shippingMatch,
+                'timestamp' => $validated['observed_at'],
+            ]);
+
+            foreach ($validated['epc_list'] as $epc) {
+                self::notifyEdgeBridge([
+                    'type' => 'TAG_READ',
+                    'epc' => $epc,
+                    'antenna' => $validated['antenna_sequence'] === 'B_TO_A' ? 2 : 1,
+                    'direction' => $direction,
+                    'timestamp' => $validated['observed_at'],
+                ]);
+            }
+
+            return response()->json($result);
+        } catch (\Throwable $e) {
+            \Log::error('GATE EVENT ERROR: ' . $e->getMessage() . "\n" . $e->getTraceAsString());
+            return response()->json(['error' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Ingest lightweight tag sighting for instant live detection on frontend (<100ms).
+     */
+    public function handleTagSighting(Request $request): JsonResponse
+    {
         $device = $request->attributes->get('gate_device');
-        $request->merge([
-            'warehouse_id' => $device->warehouse_id,
-            'gate_id'      => $device->device_code,
-            'epc_list'     => collect($request->input('epc_list', []))
-                ->map(fn ($epc) => strtoupper(trim($epc)))
-                ->values()
-                ->all(),
-            'raw_payload'  => [
-                ...$request->input('raw_payload', []),
-                'device' => $device->device_code,
-            ],
+        $epc = strtoupper(trim((string) $request->input('epc', '')));
+        if (!$epc) {
+            return response()->json(['error' => 'EPC required'], 422);
+        }
+
+        self::notifyEdgeBridge([
+            'type' => 'TAG_READ',
+            'epc' => $epc,
+            'antenna' => $request->input('antenna', 1),
+            'rssi' => $request->input('rssi', -60),
+            'gate_id' => $device->device_code ?? 'GATE-01',
+            'warehouse_id' => $device->warehouse_id ?? 1,
+            'timestamp' => $request->input('observed_at', now()->toIso8601String()),
         ]);
 
-        $validated = $request->validate([
-            'event_id'             => 'required|uuid',
-            'observed_at'          => 'required|date|before_or_equal:now',
-            'warehouse_id'         => 'required|exists:warehouses,id',
-            'gate_id'              => 'nullable|string|max:50',
-            'antenna_sequence'     => 'required|in:A_TO_B,B_TO_A,SINGLE_ANTENNA',
-            'direction'            => 'nullable|in:OUT,IN',
-            'epc_list'             => 'required|array|min:1|max:100',
-            'epc_list.*'           => ['string', 'min:8', 'max:64', 'regex:/^[0-9A-Fa-f]+$/'],
-            'cctv_snapshot_path'   => 'nullable|string',
-            'shipping_document_id' => 'nullable|exists:shipping_documents,id',
-            'raw_payload'          => 'nullable|array',
-        ]);
+        return response()->json(['ok' => true]);
+    }
 
-        // Primary gate processing via GateEngineService
-        $result = $this->gateEngine->processGateEvent($validated, $device);
-
-        // Also update ShippingDocumentTag.status='scanned' for doc progress tracking
-        $direction = $validated['direction']
-            ?? ($validated['antenna_sequence'] === 'A_TO_B' ? 'OUT' : 'IN');
-
-        $shippingMatch = ShippingDocumentController::matchGateEpcs(
-            $validated['warehouse_id'],
-            $validated['epc_list'],
-            $direction
-        );
-        $result['shipping_match'] = $shippingMatch;
-
-        return response()->json($result);
+    /**
+     * Dispatch an internal broadcast to Edge Bridge WebSocket server (non-blocking).
+     */
+    public static function notifyEdgeBridge(array $payload): void
+    {
+        try {
+            $ch = curl_init('http://edge-bridge:2078/broadcast');
+            curl_setopt_array($ch, [
+                CURLOPT_POST => true,
+                CURLOPT_POSTFIELDS => json_encode($payload),
+                CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
+                CURLOPT_TIMEOUT_MS => 300,
+                CURLOPT_RETURNTRANSFER => true,
+            ]);
+            curl_exec($ch);
+            curl_close($ch);
+        } catch (\Throwable) {
+            // Best effort broadcast
+        }
     }
 
     /**
@@ -161,6 +236,83 @@ class GateEventController extends Controller
             'Connection'        => 'keep-alive',
             'X-Accel-Buffering' => 'no',
         ]);
+    }
+
+    /**
+     * Simulate a gate event from the frontend (user Sanctum auth, not device auth).
+     * Used by the GateMonitor UI simulation panel.
+     */
+    public function simulateGateEvent(Request $request): JsonResponse
+    {
+        try {
+            $validated = $request->validate([
+                'warehouse_id'     => 'required|integer|exists:warehouses,id',
+                'antenna_sequence' => 'required|in:A_TO_B,B_TO_A,SINGLE_ANTENNA',
+                'direction'        => 'nullable|in:OUT,IN',
+                'epc_list'         => 'required|array|min:1|max:100',
+                'epc_list.*'       => ['string', 'min:8', 'max:64', 'regex:/^[0-9A-Fa-f]+$/i'],
+            ]);
+
+            // Normalize EPCs to uppercase
+            $validated['epc_list'] = array_map('strtoupper', $validated['epc_list']);
+
+            // Find an active gate device for this warehouse
+            $device = \App\Models\GateDevice::where('warehouse_id', $validated['warehouse_id'])
+                ->where('is_active', true)
+                ->first();
+
+            if (!$device) {
+                return response()->json(['message' => 'Tidak ada perangkat gate aktif di gudang ini.'], 404);
+            }
+
+            $payload = array_merge($validated, [
+                'event_id'           => (string) \Illuminate\Support\Str::uuid(),
+                'observed_at'        => now()->toIso8601String(),
+                'gate_id'            => $device->device_code,
+                'cctv_snapshot_path' => null,
+                'raw_payload'        => ['simulated' => true, 'user_id' => $request->user()?->id],
+            ]);
+
+            $result = $this->gateEngine->processGateEvent($payload, $device);
+
+            $direction = $validated['direction']
+                ?? ($validated['antenna_sequence'] === 'A_TO_B' ? 'OUT' : 'IN');
+
+            $shippingMatch = ShippingDocumentController::matchGateEpcs(
+                $validated['warehouse_id'],
+                $validated['epc_list'],
+                $direction
+            );
+            $result['shipping_match'] = $shippingMatch;
+
+            self::notifyEdgeBridge([
+                'type'           => 'GATE_EVENT',
+                'event_id'       => $payload['event_id'],
+                'warehouse_id'   => $validated['warehouse_id'],
+                'gate_id'        => $device->device_code,
+                'direction'      => $direction,
+                'status'         => $result['status'] ?? 'PROCESSED',
+                'unlock_gate'    => $result['unlock_gate'] ?? false,
+                'epc_list'       => $validated['epc_list'],
+                'shipping_match' => $shippingMatch,
+                'timestamp'      => $payload['observed_at'],
+            ]);
+
+            foreach ($validated['epc_list'] as $epc) {
+                self::notifyEdgeBridge([
+                    'type'      => 'TAG_READ',
+                    'epc'       => $epc,
+                    'antenna'   => $validated['antenna_sequence'] === 'B_TO_A' ? 2 : 1,
+                    'direction' => $direction,
+                    'timestamp' => $payload['observed_at'],
+                ]);
+            }
+
+            return response()->json($result);
+        } catch (\Throwable $e) {
+            \Log::error('SIMULATE GATE EVENT ERROR: ' . $e->getMessage());
+            return response()->json(['error' => $e->getMessage()], 500);
+        }
     }
 
     /**

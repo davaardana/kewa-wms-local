@@ -161,7 +161,7 @@ export default function Dashboard({ onNavigate, currentUser }) {
           <div className="text-sm font-bold">Daftarkan Tag</div>
           <div className="text-[10px] text-amber-200 mt-0.5">Pasangkan tag ke item</div>
         </button>
-        <button onClick={() => onNavigate('gate-monitor')}
+        <button onClick={() => onNavigate('rfid-gate')}
           className="bg-slate-800 hover:bg-slate-700 text-white rounded-xl p-4 text-left transition shadow-md cursor-pointer">
           <Radio className="w-5 h-5 mb-2 text-slate-300" />
           <div className="text-sm font-bold">Monitor Gate</div>

@@ -172,7 +172,7 @@ export const shippingApi = {
 // ── Gate Monitor (Live Feed & Event Logs) ─────────────────────
 export const gateApi = {
   getLiveFeed:       (warehouseId)   => api.get('/gate/live-feed', { params: { warehouse_id: warehouseId } }),
-  triggerGateEvent:  (payload)       => api.post('/gate/event', payload),
+  triggerGateEvent:  (payload)       => api.post('/gate/simulate', payload),
   deleteEvent:       (id)            => api.delete(`/gate/events/${id}`),
   clearHistory:      (warehouseId)   => api.delete('/gate/events', { params: { warehouse_id: warehouseId }, data: { warehouse_id: warehouseId } }),
 };

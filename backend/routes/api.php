@@ -22,6 +22,7 @@ Route::post('/auth/login', [AuthController::class, 'login']);
 // ──────────────────────────────────────────────
 Route::middleware('auth.device')->group(function () {
     Route::post('/gate/event',          [GateEventController::class,      'handleGateEvent']);
+    Route::post('/gate/sighting',       [GateEventController::class,      'handleTagSighting']);
     Route::post('/devices/heartbeat',   [DeviceTelemetryController::class, 'heartbeat']);
     Route::post('/devices/incidents',   [DeviceTelemetryController::class, 'storeIncident']);
     Route::get('/devices/config',       [DeviceTelemetryController::class, 'config']);
@@ -101,6 +102,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // ── Gate Live Feed & Event Logs ───────────
     Route::get('/gate/live-feed',        [GateEventController::class, 'liveFeed']);
+    Route::post('/gate/simulate',        [GateEventController::class, 'simulateGateEvent']);
     Route::delete('/gate/events/{id}',   [GateEventController::class, 'destroy']);
     Route::delete('/gate/events',        [GateEventController::class, 'clearHistory']);
 
