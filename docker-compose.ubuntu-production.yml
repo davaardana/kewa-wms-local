@@ -1,9 +1,6 @@
-# Ubuntu production + custom domain/Cloudflare
 # Recommended: terminate TLS at host reverse proxy; bind app to localhost only.
 # docker compose --env-file .env.ubuntu-production -f docker-compose.production.yml -f docker-compose.ubuntu-production.yml up -d --build
 services:
   edge-bridge:
     profiles: [edge]
     ports: []
-  cloudflared:
-    profiles: [tunnel]

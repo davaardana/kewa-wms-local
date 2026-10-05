@@ -59,7 +59,7 @@ export default function Laporan({ defaultTab = 'trail', currentUser = null }) {
     const connectWs = async () => {
       if (isUnmounted || !selectedWarehouseId) return;
       try {
-        ws = await openAuthenticatedEdgeSocket(selectedWarehouseId, [], {
+        ws = await openAuthenticatedEdgeSocket(selectedWarehouseId, ['PING'], {
           onAuthenticated: (socket) => {
             if (isUnmounted) return socket.close();
             setWsConnected(true);

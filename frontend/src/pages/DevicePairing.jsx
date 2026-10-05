@@ -530,7 +530,7 @@ export default function DevicePairing({ currentUser = null }) {
             )}
           </div>
           <div className="text-lg font-bold mt-1 font-mono tracking-tight">
-            {wsConnected ? 'ws://127.0.0.1:2078' : 'Offline / Standby'}
+            {wsConnected ? 'Edge WebSocket aktif' : 'Offline / Standby'}
           </div>
 
         </div>

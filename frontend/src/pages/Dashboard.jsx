@@ -69,13 +69,13 @@ export default function Dashboard({ onNavigate, currentUser }) {
     );
   }
 
-  const totalItems = stats?.total_items || 0;
-  const totalTags = stats?.total_tags || 0;
-  const totalWarehouses = stats?.total_warehouses || 0;
+  const totalItems = stats?.metrics?.total_items ?? stats?.total_items ?? 0;
+  const totalTags = stats?.metrics?.total_tags ?? stats?.total_tags ?? 0;
+  const totalWarehouses = stats?.metrics?.total_warehouses ?? stats?.total_warehouses ?? 0;
 
   // Device summary
-  const deviceOnline = devicesData?.online_count || 0;
-  const deviceTotal = devicesData?.total_count || 0;
+  const deviceOnline = devicesData?.devices?.filter((device) => device.metrics?.reader_status === 'connected').length ?? 0;
+  const deviceTotal = devicesData?.summary?.total ?? devicesData?.total_count ?? devicesData?.devices?.length ?? 0;
 
   return (
     <div className="space-y-5">
