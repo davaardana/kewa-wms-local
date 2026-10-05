@@ -228,7 +228,21 @@ class GateBridgeApp {
       this.wss = new WebSocketServer({
         port,
         maxPayload: 4096,
-        verifyClient: ({ origin }) => this.wsAllowedOrigins.length === 0 || this.wsAllowedOrigins.includes(origin),
+        verifyClient: ({ origin }) => {
+          if (this.wsAllowedOrigins.length === 0 || !origin) return true;
+          try {
+            const originHost = new URL(origin).hostname;
+            return this.wsAllowedOrigins.some((allowed) => {
+              try {
+                return new URL(allowed).hostname === originHost;
+              } catch {
+                return allowed === origin;
+              }
+            });
+          } catch {
+            return this.wsAllowedOrigins.includes(origin);
+          }
+        },
       });
       console.log(`🌐 [WEBSOCKET BROADCASTER] Real-time WS Server listening on ws://0.0.0.0:${port}`);
 

@@ -35,9 +35,9 @@ class WsControlTicketController extends Controller
         abort_unless($user->is_active, 403, 'User account is inactive.');
         $role = Role::where('code', $user->role)->first();
         $allowedModules = $role?->permissions()->where('is_allowed', true)->pluck('module_key')->all() ?? [];
-        $isDispatch = ($validated['purpose'] ?? null) === 'HANDHELD_DISPATCH';
         abort_unless(
             $user->isSuperAdmin()
+                || $user->isManagement()
                 || ($isDispatch && in_array('dispatch_scan', $allowedModules, true))
                 || $user->assignedWarehouses()->whereKey($validated['warehouse_id'])->exists(),
             403,
