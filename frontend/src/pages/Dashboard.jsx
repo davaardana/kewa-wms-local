@@ -23,8 +23,9 @@ export default function Dashboard({ onNavigate, currentUser }) {
         shippingApi.getDocuments({ per_page: 5 }).catch(() => ({ data: { data: [] } })),
         devicesApi.getStatus().catch(() => ({ data: null })),
       ]);
-      setStats(kpiRes.data);
-      setRecentDocs(docsRes.data?.data || []);
+      setStats(kpiRes?.data || null);
+      const docs = Array.isArray(docsRes?.data?.data) ? docsRes.data.data : (Array.isArray(docsRes?.data) ? docsRes.data : []);
+      setRecentDocs(docs);
       if (devRes?.data) setDevicesData(devRes.data);
     } catch (err) {
       console.error('Dashboard fetch error:', err);
@@ -74,8 +75,9 @@ export default function Dashboard({ onNavigate, currentUser }) {
   const totalWarehouses = stats?.metrics?.total_warehouses ?? stats?.total_warehouses ?? 0;
 
   // Device summary
-  const deviceOnline = devicesData?.devices?.filter((device) => device.metrics?.reader_status === 'connected').length ?? 0;
-  const deviceTotal = devicesData?.summary?.total ?? devicesData?.total_count ?? devicesData?.devices?.length ?? 0;
+  const deviceList = Array.isArray(devicesData?.devices) ? devicesData.devices : [];
+  const deviceOnline = deviceList.filter((device) => device?.metrics?.reader_status === 'connected' || device?.status === 'online').length;
+  const deviceTotal = devicesData?.summary?.total ?? devicesData?.total_count ?? deviceList.length;
 
   return (
     <div className="space-y-5">

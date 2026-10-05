@@ -15,6 +15,7 @@ import UserManagement from './pages/UserManagement';
 import InstallPwaModal, { useDeviceDetection } from './components/InstallPwaModal';
 import ProfileModal from './components/ProfileModal';
 import ErrorPage from './components/ui/ghost-404-page';
+import ErrorBoundary from './components/ErrorBoundary';
 import {
   LayoutDashboard,
   Radio,
@@ -620,7 +621,7 @@ export default function App() {
           ) : !activePageAllowed ? (
             <ErrorPage status={405} onHome={() => navigateTo('dashboard', true)} />
           ) : (
-            <>
+            <ErrorBoundary key={activePage} onReset={() => navigateTo('dashboard', true)}>
               {activePage === 'dashboard' && <Dashboard onNavigate={navigateTo} currentUser={userWithEffectiveRole} />}
               {activePage === 'shipping-documents' && <ShippingDocuments currentUser={userWithEffectiveRole} />}
               {activePage === 'tag-enrollment' && <TagEnrollment currentUser={userWithEffectiveRole} />}
@@ -628,7 +629,7 @@ export default function App() {
               {activePage === 'rfid-gate' && <RfidGate onNavigate={navigateTo} currentUser={userWithEffectiveRole} />}
               {activePage === 'laporan' && <Laporan defaultTab="trail" currentUser={userWithEffectiveRole} />}
               {activePage === 'user-management' && <UserManagement currentUser={userWithEffectiveRole} />}
-            </>
+            </ErrorBoundary>
           )}
         </main>
       </div>
