@@ -2,9 +2,6 @@
 # Recommended: terminate TLS at host reverse proxy; bind app to localhost only.
 # docker compose --env-file .env.ubuntu-production -f docker-compose.production.yml -f docker-compose.ubuntu-production.yml up -d --build
 services:
-  nginx:
-    ports:
-      - "127.0.0.1:8080:80"
   edge-bridge:
     profiles: [edge]
     ports: []

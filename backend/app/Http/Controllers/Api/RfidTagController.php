@@ -182,8 +182,15 @@ class RfidTagController extends Controller
      */
     public function updateStatus(Request $request, string $epc): JsonResponse
     {
+        $user = $request->user();
+        if (!$user || !in_array($user->role, ['superadmin', 'pm', 'pic_lapangan'], true)) {
+            return response()->json([
+                'message' => 'Akses Ditolak: Hanya Superadmin, PM, atau PIC Lapangan yang dapat mengubah status tag RFID.'
+            ], 403);
+        }
+
         $validated = $request->validate([
-            'status' => 'required|in:active,attached,defective,lost,decommissioned',
+            'status' => 'required|in:active,attached,defective,lost',
             'notes' => 'nullable|string',
         ]);
 
