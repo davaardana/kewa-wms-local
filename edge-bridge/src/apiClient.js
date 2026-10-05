@@ -169,6 +169,24 @@ class ApiClient {
       return null;
     }
   }
+
+  /**
+   * Send lightweight tag sighting to central API for instant live UI telemetry (<100ms).
+   */
+  async sendTagSighting(epc, antenna = 1, rssi = -60, observedAt = new Date().toISOString()) {
+    if (!this.deviceToken) return null;
+    try {
+      const response = await axios.post(`${this.baseUrl}/gate/sighting`, {
+        epc,
+        antenna,
+        rssi,
+        observed_at: observedAt,
+      }, this.mutationConfig(1000));
+      return response.data;
+    } catch (e) {
+      return null;
+    }
+  }
 }
 
 module.exports = ApiClient;

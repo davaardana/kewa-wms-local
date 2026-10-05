@@ -550,11 +550,11 @@ export default function App() {
             className="flex w-full items-center gap-2.5 rounded-lg px-1.5 py-1 text-left hover:bg-slate-800 transition"
           >
             <div className="w-7 h-7 rounded-md bg-blue-600/20 border border-blue-500/30 text-blue-400 flex items-center justify-center font-bold text-xs flex-shrink-0">
-              {currentUser.name[0]}
+              {(currentUser?.name || 'User')[0]}
             </div>
             <div className="overflow-hidden flex-1">
-              <div className="text-xs font-semibold truncate text-white">{currentUser.name}</div>
-              <div className="text-[10px] font-mono text-slate-400 uppercase tracking-tight">{currentUser.role}</div>
+              <div className="text-xs font-semibold truncate text-white">{currentUser?.name || 'User'}</div>
+              <div className="text-[10px] font-mono text-slate-400 uppercase tracking-tight">{currentUser?.role || ''}</div>
             </div>
             <User className="w-4 h-4 text-slate-400" />
           </button>
@@ -588,7 +588,7 @@ export default function App() {
               {deviceInfo.isStandalone ? deviceInfo.os : 'Install App (' + deviceInfo.os + ')'}
             </button>
             <span className="text-[11px] font-bold bg-slate-900 text-white px-2.5 py-1 rounded-lg uppercase tracking-wide">
-              {userWithEffectiveRole.role}
+              {userWithEffectiveRole?.role || currentUser?.role || ''}
             </span>
           </div>
         </header>

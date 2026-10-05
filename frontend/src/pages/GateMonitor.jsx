@@ -221,9 +221,16 @@ export default function GateMonitor({ onNavigate = null, onOpenPairing = null, c
             if (data.type === 'MODE_CHANGED' || data.type === 'MODE_INFO' || data.type === 'HANDSHAKE') {
               const activeM = data.mode || data.operational_mode;
               if (activeM) setBridgeMode(activeM);
-            } else if (data.type === 'TAG_READ') {
+            } else if (data.type === 'TAG_READ' || data.type === 'TAG_SIGHTING') {
+              // Instant live detection display (<100ms from tag scan)
               setLiveTagDetection({ epc: data.epc, antenna: data.antenna, rssi: data.rssi, timestamp: data.timestamp });
-            } else if (data.type === 'GATE_EVENT') loadEvents(true);
+            } else if (data.type === 'GATE_DECISION') {
+              // GATE_DECISION: backend sudah respond → langsung reload events list
+              loadEvents(true);
+            } else if (data.type === 'GATE_EVENT') {
+              // GATE_EVENT: fallback reload (setelah GATE_DECISION sudah duluan)
+              loadEvents(true);
+            }
           },
           onError: () => { if (!isDisposed) startPollingFallback(); },
           onClose: () => { if (!isDisposed) startPollingFallback(); },

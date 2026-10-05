@@ -775,7 +775,8 @@ class GateBridgeApp {
 
     // 1. Broadcast raw tag read — dedup per EPC per 1s to avoid flooding WS clients (#6)
     const _nowDedup = Date.now();
-    if (_nowDedup - (this.lastTagBroadcastAt.get(epc) || 0) >= 1000) {
+    const _lastBroadcast = this.lastTagBroadcastAt.get(epc) || 0;
+    if (_nowDedup - _lastBroadcast >= 1000) {
       this.lastTagBroadcastAt.set(epc, _nowDedup);
       this.broadcast({
         type: 'TAG_READ',
@@ -785,6 +786,16 @@ class GateBridgeApp {
         gate_id: this.gateId,
         warehouse_id: this.warehouseId,
         operational_mode: this.operationalMode,
+        timestamp: new Date().toISOString(),
+      });
+    } else if (_nowDedup - _lastBroadcast >= 200) {
+      // TAG_SIGHTING: lighter rebroadcast within 200-1000ms window for FE instant feedback
+      this.broadcast({
+        type: 'TAG_SIGHTING',
+        epc,
+        rssi,
+        gate_id: this.gateId,
+        warehouse_id: this.warehouseId,
         timestamp: new Date().toISOString(),
       });
     }
@@ -962,6 +973,20 @@ class GateBridgeApp {
     };
 
     const response = await this.api.sendGateEvent(payload);
+
+    // GATE_DECISION: Ringkas broadcast segera setelah backend respond, FE reload tanpa polling
+    this.broadcast({
+      type: 'GATE_DECISION',
+      event_id: eventId,
+      gate_id: this.gateId,
+      warehouse_id: this.warehouseId,
+      unlock_gate: response?.unlock_gate || false,
+      mismatch: response?.mismatch || false,
+      status: response?.status || 'UNKNOWN',
+      total_tags: tagsArray.length,
+      direction,
+      timestamp: new Date().toISOString(),
+    });
 
     // Feature #9: Write to append-only audit trail
     this.auditLogger.log('GATE_PASS', {
