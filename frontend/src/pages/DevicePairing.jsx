@@ -168,7 +168,7 @@ export default function DevicePairing({ currentUser = null }) {
     const connect = async () => {
       if (isUnmounted) return;
       try {
-        ws = await openAuthenticatedEdgeSocket(warehouseId, ['GET_MODE', 'SET_MODE:GATE_SECURITY'], {
+        ws = await openAuthenticatedEdgeSocket(warehouseId, ['GET_MODE', 'SET_MODE:GATE_SECURITY', 'TEST_READER_CONNECTION'], {
           onAuthenticated: (socket) => {
             if (isUnmounted) return socket.close();
             setWsConnected(true);
@@ -226,39 +226,66 @@ export default function DevicePairing({ currentUser = null }) {
     showToast('Simulasi scan tidak tersedia. Gunakan reader RFID fisik.', 'warning');
   };
 
-  // Test Ping for a specific device in the list
+  const testReaderThroughEdge = (device) => new Promise((resolve, reject) => {
+    let socket;
+    let settled = false;
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      try { socket?.close(); } catch {}
+      callback(value);
+    };
+    const timeout = setTimeout(() => finish(reject, new Error('Timeout menunggu status reader dari Edge lokal.')), 5000);
+    openAuthenticatedEdgeSocket(device.warehouse_id, ['TEST_READER_CONNECTION'], {
+        onAuthenticated: (authenticatedSocket) => {
+          authenticatedSocket.send(JSON.stringify({ action: 'TEST_READER_CONNECTION' }));
+        },
+        onMessage: (message) => {
+          if (message.type === 'READER_CONNECTION_TEST') finish(resolve, message);
+        },
+        onClose: () => { if (!settled) finish(reject, new Error('Edge Bridge lokal terputus.')); },
+        onError: () => { if (!settled) finish(reject, new Error('Edge Bridge lokal gagal dihubungi.')); },
+      }, device.id)
+      .then((openedSocket) => {
+        if (settled) {
+          try { openedSocket.close(); } catch {}
+          return;
+        }
+        socket = openedSocket;
+      })
+      .catch((error) => finish(reject, error));
+  });
+
+  // Test reader through the Edge Bridge that can actually reach the local LAN.
   const handleTestPing = async (device) => {
     const devId = device.id;
     setPingingMap((prev) => ({ ...prev, [devId]: true }));
     setPingResultMap((prev) => ({ ...prev, [devId]: null }));
 
     try {
-      const res = await devicesApi.testConnection({
-        ip_address: device.ip_address,
-        tcp_port: device.tcp_port,
-        timeout: 2,
-      });
+      const result = await testReaderThroughEdge(device);
 
-      if (res.data.success) {
+      if (result.success) {
         setPingResultMap((prev) => ({
           ...prev,
           [devId]: {
             success: true,
-            latency: res.data.latency_ms,
-            message: res.data.message,
+            latency: null,
+            message: result.message,
           },
         }));
-        showToast(`Koneksi ${device.device_name} BERHASIL (${res.data.latency_ms}ms)`, 'success');
+        showToast(`Koneksi ${device.device_name} BERHASIL melalui Edge lokal`, 'success');
       } else {
         setPingResultMap((prev) => ({
           ...prev,
           [devId]: {
             success: false,
-            latency: res.data.latency_ms,
-            message: res.data.message,
+            latency: null,
+            message: result.message,
           },
         }));
-        showToast(`Koneksi ${device.device_name} GAGAL: ${res.data.message}`, 'error');
+        showToast(`Koneksi ${device.device_name} GAGAL: ${result.message}`, 'error');
       }
     } catch (err) {
       const errMsg = err.response?.data?.message || err.message || 'Gagal terhubung ke host';
@@ -276,7 +303,7 @@ export default function DevicePairing({ currentUser = null }) {
     }
   };
 
-  // Test Ping from inside Modal Form
+  // Test socket from the Edge selected in the modal, never from the VPS.
   const handleModalTestPing = async () => {
     if (!formData.ip_address || !formData.tcp_port) {
       showToast('Harap isi IP Address dan Port terlebih dahulu', 'warning');
@@ -287,18 +314,9 @@ export default function DevicePairing({ currentUser = null }) {
     setModalPingResult(null);
 
     try {
-      const res = await devicesApi.testConnection({
-        ip_address: formData.ip_address,
-        tcp_port: parseInt(formData.tcp_port, 10),
-        timeout: 2,
-      });
-
-      setModalPingResult({
-        success: true,
-        latency: res.data.latency_ms,
-        message: res.data.message,
-      });
-      showToast(`Sukses! Host terhubung (${res.data.latency_ms}ms)`, 'success');
+      const result = await testReaderThroughEdge({ ...formData, id: editingId, warehouse_id: formData.warehouse_id || previewDevice?.warehouse_id });
+      setModalPingResult({ success: result.success, latency: null, message: result.message });
+      showToast(result.success ? 'Reader terhubung melalui Edge lokal.' : result.message, result.success ? 'success' : 'error');
     } catch (err) {
       const errMsg = err.response?.data?.message || err.message || 'Host tidak merespon';
       setModalPingResult({

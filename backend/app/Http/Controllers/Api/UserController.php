@@ -186,6 +186,7 @@ class UserController extends Controller
 
     /**
      * Get system roles and RBAC permission matrix (From Database)
+     * #7: Cache-Control 3 menit — roles sangat jarang berubah
      */
     public function getRolesAndPermissions(): JsonResponse
     {
@@ -221,10 +222,11 @@ class UserController extends Controller
             ];
         });
 
+        // #7: Role & permission matrix sangat jarang berubah — cache 3 menit
         return response()->json([
-            'roles' => $roles,
+            'roles'   => $roles,
             'modules' => $modules,
-        ]);
+        ])->header('Cache-Control', 'private, max-age=180, stale-while-revalidate=60');
     }
 
     /**

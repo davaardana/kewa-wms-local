@@ -56,16 +56,16 @@ Heartbeat Edge default saat ini 10 detik dan configurable. Status server memakai
 |---|---|---|---|
 | POST | `/devices/heartbeat` | perangkat | Identitas gudang/perangkat berasal dari token; update heartbeat, metrics, status reader. |
 | POST | `/devices/incidents` | perangkat | `{event_id UUID,component,status,reason?,observed_at}`; idempotent; `201` baru, `200` replay. |
-| GET | `/devices/config` | perangkat | Config dan `authorized_transaction` hanya bila tepat satu sesi approved aktif. |
+| GET | `/devices/config` | perangkat | Dual antenna tidak menerima dokumen arbitrer; `authorized_document=null` dan Gate Engine resolve dari EPC. Single antenna memprioritaskan tepat satu dokumen `in_progress`; jika tidak ada, memakai tepat satu `approved`. Lebih dari satu dokumen `in_progress` atau lebih dari satu `approved` saat antre berarti fail-closed. |
 | GET | `/devices/status` | auth-only | Ringkasan Edge dan reader terpisah. |
 | GET | `/devices/incidents` | auth-only | Filter `device_id`, `limit` 1–200. |
-| GET | `/devices` | auth-only | Filter `warehouse_id`; `handheld_eligible=1` hanya mengembalikan meja enrollment dan Hybrid bila flag environment mengizinkan. |
+| GET | `/devices` | auth-only | Filter `warehouse_id`; `handheld_eligible=1` mengembalikan `enrollment_desktop` dan `gate_controller`; Hybrid hanya bila flag environment mengizinkan. Ticket Enrollment tetap memerlukan permission `tag_enrollment` dan warehouse assignment. |
 | POST/PUT | `/devices`, `/devices/{id}` | superadmin/pm | Pair/update reader; token opsional min. 32 karakter, hanya hash disimpan; koneksi TCP diuji. |
 | DELETE | `/devices/{id}` | superadmin/pm | Hard-delete konfigurasi perangkat. |
 | POST | `/devices/test-connection` | auth-only | Uji TCP server-side; sukses `200`, gagal `422`. |
 | POST | `/ws-control-ticket` | Pengguna aktif + assignment/permission | `{warehouse_id,device_id?,requested_commands[]}`; respons `{ticket,expires_at,edge_ws_url,device_id,warehouse_id}`, `Cache-Control: no-store`. Secret min. 32 karakter atau `503`. |
 
-Command WS yang tersedia: `PING`, `GET_MODE`, `SET_MODE:GATE_SECURITY`, `SET_MODE:ENROLLMENT`. Ticket HMAC v2 terikat user, gudang, `device_code`, command, TTL, dan replay protection; Edge wajib mengatur `WS_DEVICE_CODE`. Tiket v1 ditolak, deploy backend/Edge bersamaan.
+Command WS yang tersedia: `PING`, `GET_MODE`, `SET_MODE:GATE_SECURITY`, `SET_MODE:ENROLLMENT`. Gate controller dapat dipakai untuk Enrollment hanya oleh user yang memiliki permission `tag_enrollment` dan penugasan gudang. Mode Enrollment bersifat sementara: Edge mengembalikan mode sebelumnya setelah sesi WebSocket Enrollment terakhir ditutup; saat masih ada sesi Enrollment, klien lain tidak dapat memaksa perubahan mode. Ticket HMAC v2 terikat user, gudang, `device_code`, command, TTL, dan replay protection; Edge wajib mengatur `WS_DEVICE_CODE`. Tiket v1 ditolak, deploy backend/Edge bersamaan.
 
 User management `POST/PUT /users`: hanya superadmin; `warehouse_ids` berupa array opsional berisi ID warehouse unik dan valid. Pada create, kosong/tidak dikirim berarti tanpa assignment. Pada update, field tidak dikirim mempertahankan assignment; array kosong mencabut semuanya. Superadmin selalu mengakses semua warehouse tanpa assignment.
 
@@ -75,16 +75,35 @@ Pairing `POST/PUT /devices`: `edge_ws_url` nullable, maksimum 2048 karakter, han
 
 Resolusi tiket hanya perangkat aktif di gudang yang diotorisasi: nol/tidak cocok `404`; lebih dari satu tanpa `device_id` menghasilkan `409`; endpoint kosong/tidak valid `503`. Endpoint tidak boleh berasal dari request (`edge_ws_url`/`endpoint` ditolak `422`). Fallback pilot hanya `WS_CONTROL_PILOT_URL` WSS tervalidasi + `WS_CONTROL_PILOT_WAREHOUSE_ID` eksplisit dengan tepat satu perangkat aktif. Default tidak ada fallback. Seluruh pemanggil frontend memakai endpoint respons, bukan `VITE_WS_URL`; live preview pairing memilih perangkat eksplisit. Halaman tanpa pemilih perangkat gagal tertutup bila gudang ambigu.
 
+## Shipping Document Barang Masuk/Keluar
+
+| Method | Path | Akses | Kontrak inti / side effect |
+|---|---|---|---|
+| GET/POST | `/shipping-documents` | auth-only; create hanya `pm/superadmin` | Filter `type/status/warehouse_id/search`; create memerlukan item unik dan `expected_qty >= 1`, status awal `draft`. |
+| PUT | `/shipping-documents/{id}` | `pm/superadmin` | Semua status boleh edit metadata `notes/attachments`; hanya `draft` boleh mengubah type, warehouse, item, dan expected qty. Semua update append snapshot ke `shipping_document_audits`. |
+| DELETE | `/shipping-documents/{id}` | `superadmin` | Soft archive, bukan hard-delete. Dokumen aktif hanya dapat diarsipkan bila belum ada event gate atau tag scanned; status aktif menjadi `cancelled`. Completed/cancelled/draft diarsipkan tanpa mengubah evidence/status. Append audit; tampilkan arsip via `GET /shipping-documents?archived=1` (Superadmin only). |
+| GET | `/shipping-documents/{id}` | auth-only; arsip hanya `superadmin` | Detail dokumen, tag, dan progress gate. |
+| POST | `/shipping-documents/{id}/approve` | `pm/superadmin` | `draft` atau `in_progress` → langsung `completed`. Tidak ada status intermediate `approved`; approve sekaligus menyelesaikan dokumen. |
+| POST | `/shipping-documents/{id}/assign-tags` | `pic_lapangan/pm/superadmin` | Dokumen harus `draft/approved/in_progress`; EPC harus item cocok dan tag `active`. Inbound mensyaratkan tag belum memiliki gudang; outbound mensyaratkan tag berada di gudang asal. Assignment per item tidak boleh melebihi target. Untuk item `is_length_based`, wajib sertakan `length_dispatched` (float, >0, ≤ `remaining_length_m`). Tag lintas dokumen aktif ditolak. |
+| POST | `/shipping-documents/{id}/complete` | `pic_lapangan/superadmin` | Dokumen harus `in_progress`, jumlah assignment setiap item harus tepat target, dan semua tag harus dipenuhi event gate valid. Inbound append-only mencatat `STOCK_IN` satu kali per EPC, mengaktifkan tag di gudang tujuan, lalu status menjadi `completed`. Outbound hanya menutup dokumen setelah `GATE_OUT` valid. |
+| GET | `/shipping-documents/{id}/stock-reconciliation` | `pm/superadmin` | Preview untuk inbound `completed`; assignment harus tepat, semua tag scanned, tag belum `STOCK_IN`, dan status/lokasi eligible. |
+| POST | `/shipping-documents/{id}/stock-reconciliation` | `pm/superadmin` | Body `{evidence_reference,physical_confirmation:true}`. Tombol **Catat Stok Masuk** memakai satu konfirmasi dan reference otomatis dari dokumen/aktor/waktu. Gate proof valid atau attestasi legacy terkontrol. Append `STOCK_IN` per EPC oleh user PM/Superadmin personal. PIC ditolak `403`; idempotent; ledger lama tidak diubah/dihapus. Tanpa migration/schema baru. |
+| POST | `/shipping-documents/{id}/scan-tag`, `/batch-scan` | `pic_lapangan/pm/superadmin` | Legacy manual scan selalu `422`; progress hanya dimutasi oleh gate engine setelah set EPC lengkap/valid. |
+| POST | `/shipping-documents/{id}/cancel` | `pm/superadmin` | Dokumen completed atau memiliki gate pass valid tidak bisa dibatalkan; gunakan dokumen koreksi baru agar ledger fisik tetap utuh. |
+
+`POST /gate/event` dan `/gate/simulate` menurunkan arah dari konfigurasi gate (`A_TO_B=OUT`, `B_TO_A=IN` pada dual antenna). Untuk `SINGLE_ANTENNA_SESSION`, Edge wajib mengirim arah eksplisit dari dokumen terpilih karena antena tunggal tidak dapat menentukan arah fisik. ID dokumen dari Edge hanya petunjuk: bila stale/tidak cocok, backend resolve dari warehouse, arah, status, dan EPC; hanya satu kandidat yang diterima, kandidat ambigu fail-closed. Gate menyetujui EPC exact yang di-assign ke dokumen untuk item, gudang, arah, status, dan kuantitas yang sesuai. Batch parsial bersih berstatus `STANDBY`: tidak mengubah progress atau custody; EPC standby diakumulasi sampai set assignment lengkap. Mismatch/arah salah/scan ulang ditolak dan tidak mengubah progress. `GATE_OUT` diposting pada pass valid; `GATE_IN` menjadi stok `STOCK_IN` hanya saat dokumen inbound diselesaikan dan ledger memakai user yang menyelesaikan. Legacy attestation bukan gate approval: audit trail menandainya terpisah dan mewajibkan konfirmasi fisik serta bukti pendukung.
+
 ## RFID Tag
 
 | Method | Path | Akses | Kontrak inti / side effect |
 |---|---|---|---|
-| GET | `/tags` | auth-only | Filter item/status/gudang; pagination 50. |
+| GET | `/tags` | auth-only | Filter item/status/gudang; pagination default 50, `per_page` 1-100. Enrollment dapat memakai `search` untuk EPC/material/gudang dan `status_not=decommissioned` untuk pencarian lintas halaman. |
 | POST | `/tags/enroll` | superadmin/pm/procurement | EPC tunggal/array dinormalisasi dan dedup; identitas tag aktif, `last_warehouse_id=null`, ledger `TAG_ENROLLED` atas user personal. `warehouse_id` opsional hanya konteks reader/audit, bukan stok; tetap dapat dispatch principal; `201`. |
 | POST | `/tags/reserve` | superadmin/pm/procurement | `{item_id,quantity,tag_type,notes?}`; quantity 1-1000. Menghasilkan sequence EPC atomik dari format item, menyimpan status `reserved`, lalu mengembalikan daftar untuk ekspor vendor; `201`. Tidak membentuk stok/custody. |
 | GET | `/tags/{epc}` | auth-only | Detail tag dan custody history. |
 | PATCH | `/tags/{epc}/status` | auth-only | Status `active/attached/defective/lost/decommissioned`; menulis event ledger. |
 | DELETE | `/tags/{epc}` | superadmin | Decommission, bukan hard-delete; append `TAG_DECOMMISSIONED`. |
+| DELETE | `/tags/{epc}/hard-delete` | superadmin | Hanya tag `decommissioned` tanpa assignment ke dokumen aktif. Jika masih punya lokasi stok, append `STOCK_WRITE_OFF` dan kosongkan lokasi sebelum menghapus registry; custody ledger, EPC assignment dokumen terminal, dan event gate tetap dipertahankan. Kondisi tidak eligible `409`. |
 | POST | `/tags/{epc}/reactivate` | superadmin | Hanya dari decommissioned; append `TAG_REACTIVATED`. |
 | POST | `/tags/bulk-delete` | superadmin | Decommission atomik daftar EPC; bukan hard-delete. |
 
@@ -132,8 +151,9 @@ TID, access password, lock, dan permalock belum menjadi kontrak API. Lihat [`kea
 | POST | `/gate/transactions/{id}/adjust-items` | PIC pemilik/pm/management/superadmin | Hanya approved; tidak melewati sisa BOQ; item lama yang dihilangkan dari payload tidak otomatis dihapus. |
 | POST | `/gate/transactions/{id}/finalize-partial` | Terdaftar, dinonaktifkan | Sesi approved selalu `422`; tidak memutasi BOQ, stok, atau ledger. |
 | POST | `/gate/event` | perangkat | Event UUID, waktu, sequence, 1–100 EPC, transaction ID eksplisit. Server menentukan gudang/gate/arah; append event; full valid set menyelesaikan transaksi dan mutasi custody. Replay tidak membuka gate. |
-| GET | `/gate/live-feed` | auth-only | Maks. 50 event terbaru. |
-| GET | `/gate/stream` | auth-only | SSE polling 1,5 detik; koneksi menahan worker hingga sekitar 10 detik lalu client reconnect. |
+| POST | `/gate/simulate` | auth-only | Dinonaktifkan (`410`); pratinjau skenario UI tidak boleh membuat bukti gate atau mutasi custody. |
+| GET | `/gate/live-feed` | auth-only | Maks. 50 event terbaru; `since_id` opsional mengembalikan event dengan ID lebih besar. Respons ringkas tidak menyertakan EPC/raw payload. |
+| GET | `/gate/stream` | auth-only | SSE dengan heartbeat 1,5 detik; koneksi menahan worker hingga sekitar 10 detik lalu client reconnect. `since_id` melanjutkan feed tanpa mengulang histori lama; payload event ringkas. |
 | DELETE | `/gate/events/{id}` | Dinonaktifkan | Selalu `405`; immutable. |
 | DELETE | `/gate/events` | Dinonaktifkan | Selalu `405`, `deleted_count=0`. |
 
@@ -174,8 +194,8 @@ Klien tidak mengirim atau menentukan `is_matched`.
 | Method | Path | Akses | Kontrak inti / side effect |
 |---|---|---|---|
 | GET | `/reports/stocks` | auth-only | Stok tag aktif. `stock_qty` hanya untuk item serialized; batch mengembalikan `null`. |
-| GET | `/reports/stock-card` | auth-only | Wajib gudang/item/periode; nonserialized `422`; basis `STOCK_IN` dan `GATE_OUT`. |
-| GET | `/reports/audit-trail` | auth-only | Filter EPC/item/holder/action/gudang; pagination 50. |
+| GET | `/reports/stock-card` | auth-only | Wajib gudang/item/periode; nonserialized `422`; `STOCK_IN` menambah saldo, `GATE_OUT` dan `STOCK_WRITE_OFF` mengurangi saldo. |
+| GET | `/reports/audit-trail` | auth-only | Filter EPC/item/holder/action/gudang; pagination 50, gunakan `page` untuk melanjutkan hasil. |
 | GET | `/reports/dashboard-kpis` | auth-only | KPI berdasarkan role dan event terbaru. |
 | POST | `/reports/stock-opname` | auth-only | Membandingkan EPC scan dengan tag aktif gudang. Read-only: tidak menulis ledger/status dan belum membuat tiket eskalasi. |
 

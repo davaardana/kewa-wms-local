@@ -32,19 +32,24 @@ TAHAP 3 — PIC LAPANGAN: TEMPEL TAG RFID
   PIC Lapangan:
     - Tempel sticker/tag RFID ke setiap item barang
     - Assign tag (EPC) ke item pada dokumen di sistem
+    - Jumlah assignment harus tepat sama dengan expected_qty
+    - Tag inbound harus active dan belum memiliki gudang
   Status: IN_PROGRESS
       ↓
 TAHAP 4 — BARANG LEWAT GATE READER
   Barang dengan tag RFID dilewatkan ke gate reader.
   Sistem otomatis:
     - Baca EPC setiap tag
-    - Cocokkan dengan dokumen PM yang sudah approved
-    - Tag sesuai?  → progress bertambah ✅
-    - Tag tidak dikenal? → flagged ⚠️ (notifikasi PM)
+    - Cocokkan EPC exact dengan assignment, item, qty, gudang, dan arah IN
+    - Lintasan parsial → STANDBY tanpa progress/custody
+    - Set lengkap valid → GATE_IN dan progress 100% ✅
+    - EPC/arah/gudang mismatch → DENIED, progress tidak berubah ⚠️
       ↓
 TAHAP 5 — PIC LAPANGAN: SELESAIKAN DOKUMEN
   Setelah semua barang terbaca (progress 100%),
   PIC Lapangan menyelesaikan dokumen.
+  Backend mencatat STOCK_IN per EPC dan mengaktifkan stok
+  pada gudang tujuan.
   Status: COMPLETED ✅
 ```
 
@@ -72,19 +77,21 @@ TAHAP 2 — PM APPROVE DOKUMEN KELUAR
 TAHAP 3 — PIC LAPANGAN: SIAPKAN & TAG BARANG
   PIC Lapangan menyiapkan barang yang akan keluar.
   Assign tag RFID ke setiap item dalam dokumen.
+  Tag harus active di gudang asal; assignment tepat expected_qty.
   Status: IN_PROGRESS
       ↓
 TAHAP 4 — BARANG LEWAT GATE READER (KELUAR)
   Barang dilewatkan ke gate reader saat keluar gudang.
   Sistem otomatis:
     - Baca EPC setiap tag
-    - Cocokkan dengan dokumen outbound yang approved
-    - Sesuai?               → Diizinkan keluar ✅
-    - Mismatch / tanpa dok  → DITOLAK + notifikasi PM ⛔
+    - Cocokkan EPC exact dengan assignment, item, qty, gudang, dan arah OUT
+    - Lintasan parsial → STANDBY tanpa progress/custody
+    - Set lengkap valid → GATE_OUT dan stok gudang berkurang ✅
+    - Mismatch/arah salah/tanpa dokumen → DITOLAK; progress dan stok tetap ⛔
       ↓
 TAHAP 5 — PIC LAPANGAN: SELESAIKAN DOKUMEN
-  PIC Lapangan menyelesaikan dokumen setelah semua
-  barang keluar terverifikasi.
+  PIC Lapangan menyelesaikan dokumen setelah semua EPC
+  assignment terverifikasi oleh gate (100%).
   Status: COMPLETED ✅
 ```
 

@@ -37,15 +37,19 @@ class GateBridgeApp {
       .split(',').map((origin) => origin.trim()).filter(Boolean);
     this.wsControlSecret = config.wsControlSecret ?? process.env.WS_CONTROL_SECRET ?? '';
     this.wsDeviceCode = config.wsDeviceCode ?? process.env.WS_DEVICE_CODE ?? '';
+    this.enrollmentModeGraceMs = config.enrollmentModeGraceMs ?? 8000;
     this.usedWsTicketIds = new Map();
     this.assignedAntenna = config.assignedAntenna || process.env.ASSIGNED_ANTENNA || null; // 'A' | 'B' | null (auto)
     this.gateMode = config.gateMode || process.env.GATE_MODE || null;
     this.authorizedDocument = null;
-    this.batchIdleMs = config.batchIdleMs || parseInt(process.env.BATCH_IDLE_MS || '2500', 10);
+    this.batchIdleMs = config.batchIdleMs || parseInt(process.env.BATCH_IDLE_MS || '700', 10);
     this.batchDeadlineMs = config.batchDeadlineMs || parseInt(process.env.BATCH_DEADLINE_MS || '5000', 10);
     this.maxBatchSize = config.maxBatchSize || parseInt(process.env.MAX_BATCH_SIZE || '100', 10);
     this.heartbeatIntervalMs = config.heartbeatIntervalMs || parseInt(process.env.HEARTBEAT_INTERVAL_MS || '10000', 10);
     this.readerResponseTimeoutMs = config.readerResponseTimeoutMs || parseInt(process.env.READER_RESPONSE_TIMEOUT_MS || '5000', 10);
+    this.applyReaderSettings = config.applyReaderSettings !== undefined
+      ? config.applyReaderSettings
+      : process.env.APPLY_READER_SETTINGS === 'true';
 
     // Direct Reader Connection (EL-UHF-RC4 / Fixed Network Reader)
     this.readerHost = config.readerHost || process.env.READER_HOST || '192.168.1.200';
@@ -94,11 +98,15 @@ class GateBridgeApp {
       eventId: null,
       observedAt: null,
       deadlineTimer: null,
+      startedAt: null,  // timestamp (ms) ketika tag pertama masuk batch ini
     };
     this.dispatchChain = Promise.resolve();
 
     this.activeClients = 0;
     this.wsClients = new Set();
+    this.enrollmentModeClients = new Set();
+    this.enrollmentPreviousMode = null;
+    this.enrollmentModeRestoreTimer = null;
     this.servers = [];
     this.directReaderSocket = null;
     this.directReaderReconnectTimer = null;
@@ -136,12 +144,19 @@ class GateBridgeApp {
     this.heartbeatTimer = setInterval(() => this._dispatchHeartbeat(), this.heartbeatIntervalMs);
     setImmediate(() => this._dispatchHeartbeat());
 
-    // R-09: Background gate config sync every 10s (instead of on-demand per dispatch)
-    this._syncConfigTimer = setInterval(() => this.syncGateConfig(), 10000);
+    // #1: Polling fallback setiap 10s (dari 2s → 80% lebih hemat request)
+    // SSE stream (di bawah) meng-handle push real-time dari VPS
+    this._syncConfigTimer = setInterval(() => this.syncGateConfig(), parseInt(process.env.CONFIG_SYNC_INTERVAL_MS || '10000', 10));
     setImmediate(() => this.syncGateConfig());
 
     // Watchdog check for socket health & RF loop refresh (Every 1s)
     this.watchdogTimer = setInterval(() => this._runWatchdogCheck(), 1000);
+
+    // #1/#4: Buka SSE stream ke VPS — VPS push config changes & events real-time
+    // Ini menggantikan kebutuhan VPS untuk curl ke edge (tidak perlu tahu IP edge)
+    if (this.deviceApiToken) {
+      this.api.openEventStream((type, data) => this._onVpsEvent(type, data));
+    }
   }
 
   /** High-volume per-scan log — only printed when LOG_LEVEL=debug (#10) */
@@ -213,11 +228,67 @@ class GateBridgeApp {
     if (!['DUAL_ANTENNA_AUTO', 'SINGLE_ANTENNA_SESSION'].includes(mode)) {
       this.gateMode = null;
       this.authorizedDocument = null;
+      // #2: Hapus cache EPC jika tidak ada dokumen yang diotorisasi
+      if (this.cache) this.cache.clearAuthorizedDoc();
       return false;
     }
     this.gateMode = mode;
     this.authorizedDocument = config.authorized_document || null;
+
+    // #2: Cache EPC set dari authorized_document untuk optimistic local evaluation
+    if (this.cache) {
+      if (config.authorized_document?.id && config.authorized_document?.epc_list) {
+        this.cache.setAuthorizedDoc(config.authorized_document);
+      } else {
+        this.cache.clearAuthorizedDoc();
+      }
+    }
+
     return true;
+  }
+
+  /**
+   * #1/#4 — Handle events yang di-push dari VPS via SSE stream.
+   * Menggantikan VPS curl ke edge — VPS cukup set event di cache,
+   * edge menerimanya real-time lewat koneksi yang sudah terbuka.
+   */
+  _onVpsEvent(type, data) {
+    switch (type) {
+      case 'config': {
+        // VPS push config update (doc approved, cancelled, dll)
+        const mode = data?.device?.warehouse?.gate_mode;
+        if (mode && ['DUAL_ANTENNA_AUTO', 'SINGLE_ANTENNA_SESSION'].includes(mode)) {
+          this.gateMode = mode;
+          this.authorizedDocument = data.authorized_document || null;
+          if (this.cache) {
+            if (data.authorized_document?.id && data.authorized_document?.epc_list) {
+              this.cache.setAuthorizedDoc(data.authorized_document);
+            } else {
+              this.cache.clearAuthorizedDoc();
+            }
+          }
+          console.log(`🔄 [SSE] Config updated via VPS push — gateMode: ${mode}, doc: ${this.authorizedDocument?.id || 'none'}`);
+        } else {
+          this.gateMode = null;
+          this.authorizedDocument = null;
+          if (this.cache) this.cache.clearAuthorizedDoc();
+        }
+        // Invalidate HTTP config cache so next poll also gets fresh data
+        this.api._configCache = null;
+        break;
+      }
+      case 'broadcast': {
+        // #4: VPS forward broadcast events (gate decision, dll) lewat SSE
+        // Tidak perlu curl ke edge lagi — edge sudah terkoneksi
+        this.broadcast(data);
+        break;
+      }
+      case 'heartbeat':
+        // Server-sent keepalive — tidak perlu tindakan
+        break;
+      default:
+        this._debug(`📩 [SSE] Unknown event type: ${type}`);
+    }
   }
 
   /**
@@ -290,11 +361,42 @@ class GateBridgeApp {
             if (data.action === 'PING') {
               if (!this.isWsCommandAllowed(ws, 'PING')) throw new Error('Command forbidden');
               ws.send(JSON.stringify({ type: 'PONG', timestamp: Date.now() }));
+            } else if (data.action === 'TEST_READER_CONNECTION') {
+              if (!this.isWsCommandAllowed(ws, 'TEST_READER_CONNECTION')) throw new Error('Command forbidden');
+              const connected = Boolean(this.directReaderSocket && !this.directReaderSocket.destroyed);
+              ws.send(JSON.stringify({
+                type: 'READER_CONNECTION_TEST',
+                success: connected,
+                status: connected ? 'CONNECTED' : this.readerStatus.toUpperCase(),
+                reader_status: this.readerStatus,
+                reader_host: this.readerHost,
+                reader_port: this.readerPort,
+                reader_last_response_at: this.readerLastResponseAt,
+                message: connected
+                  ? `Reader ${this.readerHost}:${this.readerPort} terhubung melalui Edge lokal.`
+                  : `Reader ${this.readerHost}:${this.readerPort} belum terhubung melalui Edge lokal.`,
+              }));
             } else if (data.action === 'SET_MODE' && ['GATE_SECURITY', 'ENROLLMENT'].includes(data.mode)) {
               if (!this.isWsCommandAllowed(ws, `SET_MODE:${data.mode}`)) throw new Error('Command forbidden');
-              this.operationalMode = data.mode;
-              console.log(`🔄 [MODE SWITCHED] Reader Operational Mode set to: ${this.operationalMode}`);
-              this.broadcast({ type: 'MODE_CHANGED', mode: this.operationalMode });
+              if (data.mode === 'ENROLLMENT') {
+                if (this.enrollmentModeRestoreTimer) {
+                  clearTimeout(this.enrollmentModeRestoreTimer);
+                  this.enrollmentModeRestoreTimer = null;
+                }
+                if (this.enrollmentModeClients.size === 0 && this.operationalMode !== 'ENROLLMENT') {
+                  this.enrollmentPreviousMode = this.operationalMode;
+                }
+                this.enrollmentModeClients.add(ws);
+                this._setOperationalMode('ENROLLMENT');
+              } else if (this.enrollmentModeClients.size > 0 && !this.enrollmentModeClients.has(ws)) {
+                ws.send(JSON.stringify({ type: 'ERROR', code: 'ENROLLMENT_SESSION_ACTIVE' }));
+              } else {
+                this.enrollmentModeClients.delete(ws);
+                if (this.enrollmentModeRestoreTimer) clearTimeout(this.enrollmentModeRestoreTimer);
+                this.enrollmentModeRestoreTimer = null;
+                this.enrollmentPreviousMode = null;
+                this._setOperationalMode('GATE_SECURITY');
+              }
             } else if (data.action === 'GET_MODE') {
               if (!this.isWsCommandAllowed(ws, 'GET_MODE')) throw new Error('Command forbidden');
               ws.send(JSON.stringify({ type: 'MODE_INFO', mode: this.operationalMode }));
@@ -343,8 +445,16 @@ class GateBridgeApp {
           }
         });
 
-        ws.on('close', () => { clearTimeout(authTimer); this.wsClients.delete(ws); });
-        ws.on('error', () => { clearTimeout(authTimer); this.wsClients.delete(ws); });
+        ws.on('close', () => {
+          clearTimeout(authTimer);
+          this.wsClients.delete(ws);
+          this._releaseEnrollmentModeClient(ws);
+        });
+        ws.on('error', () => {
+          clearTimeout(authTimer);
+          this.wsClients.delete(ws);
+          this._releaseEnrollmentModeClient(ws);
+        });
       });
     } catch (err) {
       console.warn(`⚠️ [WS BROADCASTER WARN] Could not start WebSocket server: ${err.message}`);
@@ -361,18 +471,47 @@ class GateBridgeApp {
     if (supplied.length !== expected.length || !crypto.timingSafeEqual(supplied, expected)) throw new Error('Invalid signature');
     const claims = JSON.parse(Buffer.from(parts[0], 'base64url').toString('utf8'));
     const now = Math.floor(Date.now() / 1000);
+    // Clock skew tolerance: VPS clock (ticket issuer) can lag behind local clock due to
+    // hypervisor-managed VM time that cannot be corrected via NTP. HMAC signature +
+    // jti replay-check remain the primary security gate.
+    const CLOCK_SKEW_S = parseInt(process.env.WS_CLOCK_SKEW_TOLERANCE_S || '172800', 10); // default 48h
     if (claims.v !== 2 || !this.wsDeviceCode || claims.device_code !== this.wsDeviceCode ||
       !Number.isInteger(claims.sub) || claims.warehouse_id !== this.warehouseId ||
       !Number.isInteger(claims.iat) || !Number.isInteger(claims.exp) || claims.exp <= claims.iat || claims.exp - claims.iat > 60 ||
-        !Array.isArray(claims.commands) || !claims.jti || claims.iat > now + 5 || claims.exp < now) throw new Error('Invalid claims');
-    for (const [jti, exp] of this.usedWsTicketIds) if (exp < now) this.usedWsTicketIds.delete(jti);
+        !Array.isArray(claims.commands) || !claims.jti ||
+        claims.iat > now + 5 ||               // ticket issued in future (still strict)
+        claims.exp < now - CLOCK_SKEW_S)      // ticket expired beyond skew tolerance
+      throw new Error('Invalid claims');
+    for (const [jti, exp] of this.usedWsTicketIds) if (exp < now - CLOCK_SKEW_S) this.usedWsTicketIds.delete(jti);
     if (this.usedWsTicketIds.has(claims.jti)) throw new Error('Ticket replay');
     this.usedWsTicketIds.set(claims.jti, claims.exp);
-    return { userId: claims.sub, commands: new Set(claims.commands), expiresAt: claims.exp };
+    // Store expiry in LOCAL clock time: use TTL from ticket (exp-iat) added to local now.
+    // This avoids VPS clock skew causing all commands to be immediately forbidden.
+    const localExpiresAt = now + (claims.exp - claims.iat);
+    return { userId: claims.sub, commands: new Set(claims.commands), expiresAt: localExpiresAt };
   }
 
   isWsCommandAllowed(ws, command) {
     return ws.auth?.expiresAt >= Math.floor(Date.now() / 1000) && ws.auth.commands.has(command);
+  }
+
+  _setOperationalMode(mode) {
+    if (this.operationalMode === mode) return;
+    this.operationalMode = mode;
+    console.log(`🔄 [MODE SWITCHED] Reader Operational Mode set to: ${mode}`);
+    this.broadcast({ type: 'MODE_CHANGED', mode });
+  }
+
+  _releaseEnrollmentModeClient(ws) {
+    if (!this.enrollmentModeClients?.delete(ws) || this.enrollmentModeClients.size > 0) return;
+    if (this.enrollmentModeRestoreTimer) clearTimeout(this.enrollmentModeRestoreTimer);
+    this.enrollmentModeRestoreTimer = setTimeout(() => {
+      this.enrollmentModeRestoreTimer = null;
+      if (this.enrollmentModeClients.size > 0) return;
+      const previousMode = this.enrollmentPreviousMode || 'GATE_SECURITY';
+      this.enrollmentPreviousMode = null;
+      if (this.operationalMode === 'ENROLLMENT') this._setOperationalMode(previousMode);
+    }, this.enrollmentModeGraceMs);
   }
 
   broadcast(data) {
@@ -414,6 +553,14 @@ class GateBridgeApp {
         this.syncedDeviceName = null;
         console.log(`ℹ️ [DEVICE SYNC] Belum ada perangkat reader yang dipasangkan di database (Unpaired). Berjalan dalam mode Streaming/Testing.`);
         this._setReaderStatus('unpaired', 'No paired RFID reader device found in backend');
+        this.isConnecting = false;
+        // Retry after 30s — VPS mungkin sedang restart saat ini
+        if (!this.directReaderReconnectTimer) {
+          this.directReaderReconnectTimer = setTimeout(() => {
+            this.directReaderReconnectTimer = null;
+            this.connectDirectReader();
+          }, 30000);
+        }
         return;
       } else {
         const matchedDevice = devices.find(
@@ -441,12 +588,35 @@ class GateBridgeApp {
         } else {
           this.isDeviceUnpaired = true;
           this._setReaderStatus('unpaired', 'No paired RFID reader with IP address found in backend');
+          this.isConnecting = false;
+          // Retry after 30s — device mungkin belum terdaftar ip_address-nya
+          if (!this.directReaderReconnectTimer) {
+            this.directReaderReconnectTimer = setTimeout(() => {
+              this.directReaderReconnectTimer = null;
+              this.connectDirectReader();
+            }, 30000);
+          }
           return;
         }
       }
     } catch (e) {
-      // Fall back to current readerHost / readerPort
+      // /devices/config gagal (VPS down/restart) — fall back ke readerHost/readerPort terakhir
+      // Reset isConnecting agar watchdog probe bisa trigger reconnect berikutnya
+      this.isConnecting = false;
+      this.directReaderRetryCount++;
+      if (this.directReaderRetryCount % 5 === 0) {
+        console.warn(`⚠️ [DEVICE SYNC] Gagal fetch config dari VPS (${this.directReaderRetryCount}x berturut-turut). Cek koneksi ke ${this.apiBaseUrl}`);
+      }
+      // Retry setelah 30s agar tidak hammering VPS yang sedang restart
+      if (!this.directReaderReconnectTimer) {
+        this.directReaderReconnectTimer = setTimeout(() => {
+          this.directReaderReconnectTimer = null;
+          this.connectDirectReader();
+        }, 30000);
+      }
+      return;
     }
+
 
     console.log(`📡 [DIRECT READER CLIENT] Connecting to EL-UHF-RC4 at ${this.readerHost}:${this.readerPort}...`);
 
@@ -467,14 +637,9 @@ class GateBridgeApp {
       _idleTimer = setTimeout(function _onIdle() {
         if (!socket || socket.destroyed) return;
         _idleTimeoutCount++;
-        if (_idleTimeoutCount >= 2) {
-          // 2nd consecutive idle (30s total with no data) — reader is truly dead
-          console.warn(`⚠️ [DIRECT READER] No response for ${_idleTimeoutCount * IDLE_INTERVAL_MS / 1000}s — forcing reconnect.`);
-          socket.destroy();
-          return;
-        }
-        // 1st idle: send keep-alive inventory command to wake reader
-        console.log('⏱️ [DIRECT READER IDLE] No tags for 15s — sending keep-alive inventory command...');
+        // An idle reader is valid when no RFID tag is in range. Do not destroy
+        // the TCP socket based only on the absence of tag frames.
+        console.log(`⏱️ [DIRECT READER IDLE] No tags for ${_idleTimeoutCount * IDLE_INTERVAL_MS / 1000}s — sending keep-alive inventory command...`);
         sendInventoryCmd();
         _idleTimer = setTimeout(_onIdle, IDLE_INTERVAL_MS);
       }, IDLE_INTERVAL_MS);
@@ -504,22 +669,26 @@ class GateBridgeApp {
       console.log(`⚡ [DIRECT READER INIT] Sending MODULE_INIT (CFFF0050000726) to wake up UHF RF Module...`);
       sendInitCmd();
 
-      // Step 2: 300ms for RF PLL lock, then GET current basic settings (to read current power)
+      // Step 2: optionally apply RF settings; the RC4 remains stable with the
+      // module init followed directly by inventory in the default mode.
       if (this.directReaderInitTimer) clearTimeout(this.directReaderInitTimer);
       this.directReaderInitTimer = setTimeout(() => {
         if (this.directReaderSocket && !this.directReaderSocket.destroyed && this.directReaderSocket.writable) {
           const targetPower = parseInt(process.env.RF_POWER_DBM ?? '30', 10);
-          console.log(`📻 [RF POWER] Reading current reader settings before setting power to ${targetPower} dBm...`);
-          this.directReaderSocket.write(Rc4Parser.buildGetBasicSettingsCommand());
-          // Step 3: 500ms later set power then start inventory
-          setTimeout(() => {
-            if (this.directReaderSocket && !this.directReaderSocket.destroyed && this.directReaderSocket.writable) {
-              const setPowerCmd = Rc4Parser.buildSetRfPowerCommand(targetPower, this._lastBasicSetData ?? null);
-              this.directReaderSocket.write(setPowerCmd);
-              console.log(`📻 [RF POWER] SET_BASIC_SETTINGS sent — RF Power target: ${targetPower} dBm`);
-              setTimeout(() => { sendInventoryCmd(); }, 200);
-            }
-          }, 500);
+          if (this.applyReaderSettings) {
+            console.log(`📻 [RF POWER] Reading current reader settings before setting power to ${targetPower} dBm...`);
+            this.directReaderSocket.write(Rc4Parser.buildGetBasicSettingsCommand());
+            setTimeout(() => {
+              if (this.directReaderSocket && !this.directReaderSocket.destroyed && this.directReaderSocket.writable) {
+                const setPowerCmd = Rc4Parser.buildSetRfPowerCommand(targetPower, this._lastBasicSetData ?? null);
+                this.directReaderSocket.write(setPowerCmd);
+                console.log(`📻 [RF POWER] SET_BASIC_SETTINGS sent — RF Power target: ${targetPower} dBm`);
+                setTimeout(() => { sendInventoryCmd(); }, 200);
+              }
+            }, 500);
+          } else {
+            sendInventoryCmd();
+          }
         } else {
           sendInventoryCmd();
         }
@@ -773,10 +942,12 @@ class GateBridgeApp {
     // Feature #8: Update tag health history
     this._updateTagHealth(epc, rssi);
 
-    // 1. Broadcast raw tag read — dedup per EPC per 1s to avoid flooding WS clients (#6)
+    // 1. Broadcast raw tag read — dedup per EPC per 1s (GATE) / 300ms (ENROLLMENT) (#6)
     const _nowDedup = Date.now();
     const _lastBroadcast = this.lastTagBroadcastAt.get(epc) || 0;
-    if (_nowDedup - _lastBroadcast >= 1000) {
+    // Saat ENROLLMENT: percepat dedup ke 300ms agar tag baru langsung terdeteksi
+    const _dedupThreshold = this.operationalMode === 'ENROLLMENT' ? 300 : 1000;
+    if (_nowDedup - _lastBroadcast >= _dedupThreshold) {
       this.lastTagBroadcastAt.set(epc, _nowDedup);
       this.broadcast({
         type: 'TAG_READ',
@@ -788,8 +959,12 @@ class GateBridgeApp {
         operational_mode: this.operationalMode,
         timestamp: new Date().toISOString(),
       });
+      // ENROLLMENT relay: POST sighting ke VPS agar browser luar LAN bisa terima via SSE
+      // Browser yang tidak bisa reach ws://LAN-IP:2078/ langsung akan terima via /api/enrollment/stream
+      // Kirim selalu (tanpa cek operationalMode) — SSE endpoint di VPS yang filter berdasarkan warehouse
+      this.api.sendTagSighting(epc, antenna === 'B' ? 2 : 1, rssi).catch(() => {});
     } else if (_nowDedup - _lastBroadcast >= 200) {
-      // TAG_SIGHTING: lighter rebroadcast within 200-1000ms window for FE instant feedback
+      // TAG_SIGHTING: lighter rebroadcast within 200-dedupThreshold window for FE instant feedback
       this.broadcast({
         type: 'TAG_SIGHTING',
         epc,
@@ -862,6 +1037,7 @@ class GateBridgeApp {
     if (!this.batchCollector.eventId) {
       this.batchCollector.eventId = crypto.randomUUID();
       this.batchCollector.observedAt = new Date().toISOString();
+      this.batchCollector.startedAt = Date.now();
       this.batchCollector.deadlineTimer = setTimeout(() => this._queueDispatch(), this.batchDeadlineMs);
     }
     if (this.batchCollector.direction && this.batchCollector.direction !== direction) {
@@ -878,6 +1054,21 @@ class GateBridgeApp {
       this.batchCollector.tags.set(epc, { rssi, count: 1, firstSeen: Date.now() });
     }
 
+    // Hitung berapa lama batch ini sudah berjalan sejak tag pertama masuk.
+    // Jika sudah >= BATCH_IDLE_MS, jangan reset idle timer — langsung dispatch
+    // agar reader-spam tidak menunda pengiriman terus-menerus.
+    const batchAge = Date.now() - (this.batchCollector.startedAt || Date.now());
+    if (batchAge >= this.batchIdleMs) {
+      // Batch sudah cukup lama — dispatch sekarang tanpa menunggu idle lagi
+      if (this.batchCollector.timer) {
+        clearTimeout(this.batchCollector.timer);
+        this.batchCollector.timer = null;
+      }
+      this._queueDispatch();
+      return;
+    }
+
+    // Reset idle timer (normal path — batch masih muda, tunggu idle)
     if (this.batchCollector.timer) {
       clearTimeout(this.batchCollector.timer);
     }
@@ -908,8 +1099,16 @@ class GateBridgeApp {
     this.batchCollector.tags.clear();
     this.batchCollector.direction = null;
     this.batchCollector.timer = null;
+    this.batchCollector.startedAt = null;
     if (this.batchCollector.deadlineTimer) clearTimeout(this.batchCollector.deadlineTimer);
-    // NOTE: flushTimer/heartbeatTimer/watchdogTimer are long-running global timers — do NOT clear here (#1)
+    // SAFEGUARD: flushTimer/heartbeatTimer/watchdogTimer adalah long-running global timers
+    // yang di-set saat startup dan tidak boleh di-clear di sini. Clearing-nya hanya ada di
+    // shutdown() / stop(). Jika salah satu null di sini, berarti ada bug lain yang harus
+    // diinvestigasi — log warning tapi jangan re-create timer (bisa duplicate).
+    if (!this.flushTimer || !this.heartbeatTimer || !this.watchdogTimer) {
+      console.warn('[_takeBatch] WARN: global timer(s) unexpectedly null — flushTimer=%s heartbeatTimer=%s watchdogTimer=%s. Lihat shutdown() untuk konteks.',
+        !!this.flushTimer, !!this.heartbeatTimer, !!this.watchdogTimer);
+    }
     this.batchCollector.deadlineTimer = null;
     this.batchCollector.eventId = null;
     this.batchCollector.observedAt = null;
@@ -942,62 +1141,116 @@ class GateBridgeApp {
       const failReason = !this.gateMode ? 'No gate mode configured' : 'No authorized transaction session';
       console.warn(`🚨 [GATE FAIL-CLOSED] ${failReason}; event not authorized.`);
       this.relay.lock();
-      // R-22: broadcast fail reason to dashboard so operators see why gate didn't open
       this.broadcast({ type: 'GATE_FAIL_CLOSED', reason: failReason, tags: tagsArray.length, timestamp: new Date().toISOString() });
       return;
     }
 
-    const snapshotPath = this.cctv.capture(this.gateId, direction);
+    const snapshotPath      = this.cctv.capture(this.gateId, direction);
     const shippingDocumentId = this.authorizedDocument?.id || null;
-    const antennaSequence = this.gateMode === 'DUAL_ANTENNA_AUTO'
+    const antennaSequence   = this.gateMode === 'DUAL_ANTENNA_AUTO'
       ? (direction === 'OUT' ? 'A_TO_B' : 'B_TO_A')
       : 'SINGLE_ANTENNA';
 
-    // Feature #3: epc_list sekarang berisi objek {epc, rssi, read_count} bukan string
+    // Feature #3: epc_list sekarang berisi objek {epc, rssi, read_count}
     const payload = {
-      warehouse_id: this.warehouseId,
-      gate_id: this.gateId,
-      event_id: eventId,
-      observed_at: observedAt,
-      antenna_sequence: antennaSequence,
-      epc_list: tagsArray,
-      cctv_snapshot_path: snapshotPath,
+      warehouse_id:        this.warehouseId,
+      gate_id:             this.gateId,
+      event_id:            eventId,
+      observed_at:         observedAt,
+      antenna_sequence:    antennaSequence,
+      ...(this.gateMode === 'SINGLE_ANTENNA_SESSION' ? { direction } : {}),
+      epc_list:            tagsArray,
+      cctv_snapshot_path:  snapshotPath,
       shipping_document_id: shippingDocumentId,
       raw_payload: {
-        timestamp: observedAt,
-        total_tags: tagsArray.length,
-        device: this.syncedDeviceCode || 'ELECTRON_EL-UHF-RC4',
+        timestamp:   observedAt,
+        total_tags:  tagsArray.length,
+        device:      this.syncedDeviceCode || 'ELECTRON_EL-UHF-RC4',
         device_name: this.syncedDeviceName || 'Default Reader',
-        mode: 'SINGLE_READER',
+        mode:        'SINGLE_READER',
       },
     };
 
+    // ── #2 Optimistic Local Gate Decision ──────────────────────────────────────
+    // Evaluasi lokal menggunakan EPC cache jika tersedia.
+    // Gate dibuka SEGERA berdasarkan cached data → latensi berkurang drastis.
+    // VPS tetap di-call secara concurrent untuk keputusan definitif.
+    const detectedEpcs    = tagsArray.map((t) => t.epc);
+    const optimisticResult = this.cache ? this.cache.evaluateOptimistic(detectedEpcs) : null;
+
+    if (optimisticResult) {
+      console.log(`⚡ [OPTIMISTIC] Local pre-decision: ${optimisticResult.unlock ? 'UNLOCK' : 'LOCK'} — ${optimisticResult.reason}`);
+      // Terapkan relay segera berdasarkan evaluasi lokal
+      if (optimisticResult.unlock) {
+        this.relay.unlock();
+      } else {
+        this.relay.lock();
+      }
+      this.broadcast({
+        type:        'GATE_DECISION',
+        event_id:    eventId,
+        gate_id:     this.gateId,
+        warehouse_id: this.warehouseId,
+        unlock_gate: optimisticResult.unlock,
+        mismatch:    optimisticResult.mismatch,
+        status:      'OPTIMISTIC_LOCAL',
+        total_tags:  tagsArray.length,
+        direction,
+        timestamp:   new Date().toISOString(),
+      });
+    }
+
+    // Kirim ke VPS secara concurrent (tidak block jika optimistic sudah diterapkan)
     const response = await this.api.sendGateEvent(payload);
 
-    // GATE_DECISION: Ringkas broadcast segera setelah backend respond, FE reload tanpa polling
+    // ── Koreksi dari VPS (authoritative decision) ──────────────────────────────
+    // Jika VPS tidak setuju dengan evaluasi lokal → koreksi relay
+    if (optimisticResult) {
+      const vpsUnlock = response?.unlock_gate || false;
+      if (vpsUnlock !== optimisticResult.unlock) {
+        console.warn(`⚠️ [OPTIMISTIC CORRECTION] VPS: ${vpsUnlock ? 'UNLOCK' : 'LOCK'} vs Local: ${optimisticResult.unlock ? 'UNLOCK' : 'LOCK'} — mengoreksi relay`);
+        if (vpsUnlock) {
+          this.relay.unlock();
+        } else {
+          this.relay.lock();
+        }
+      }
+    } else {
+      // Tidak ada optimistic — gunakan keputusan VPS langsung
+      if (response && response.unlock_gate) {
+        console.log(`🔓 [GATE CONTROLLER] Access APPROVED! Sinyal perlintasan valid.`);
+        this.relay.unlock();
+      } else {
+        console.log(`🚨 [GATE CONTROLLER] Access DENIED / FLAGGED! Anomali terdeteksi.`);
+        this.relay.lock();
+      }
+    }
+
+    // GATE_DECISION final dari VPS — FE reload tanpa polling
     this.broadcast({
-      type: 'GATE_DECISION',
-      event_id: eventId,
-      gate_id: this.gateId,
+      type:        'GATE_DECISION',
+      event_id:    eventId,
+      gate_id:     this.gateId,
       warehouse_id: this.warehouseId,
       unlock_gate: response?.unlock_gate || false,
-      mismatch: response?.mismatch || false,
-      status: response?.status || 'UNKNOWN',
-      total_tags: tagsArray.length,
+      mismatch:    response?.mismatch    || false,
+      status:      response?.status      || 'UNKNOWN',
+      total_tags:  tagsArray.length,
       direction,
-      timestamp: new Date().toISOString(),
+      timestamp:   new Date().toISOString(),
     });
 
     // Feature #9: Write to append-only audit trail
     this.auditLogger.log('GATE_PASS', {
-      event_id: eventId,
+      event_id:            eventId,
       direction,
-      gate_id: this.gateId,
-      warehouse_id: this.warehouseId,
-      tag_count: tagsArray.length,
-      epc_list: tagsArray.map(t => t.epc),
+      gate_id:             this.gateId,
+      warehouse_id:        this.warehouseId,
+      tag_count:           tagsArray.length,
+      epc_list:            tagsArray.map(t => t.epc),
       shipping_document_id: shippingDocumentId,
-      unlock: response?.unlock_gate || false,
+      unlock:              response?.unlock_gate || false,
+      optimistic_used:     !!optimisticResult,
     });
 
     // Feature #10: Broadcast sighting to peer gates via mesh
@@ -1006,19 +1259,11 @@ class GateBridgeApp {
     );
 
     this.broadcast({
-      type: 'GATE_EVENT',
+      type:      'GATE_EVENT',
       payload,
       response,
       timestamp: new Date().toISOString(),
     });
-
-    if (response && response.unlock_gate) {
-      console.log(`🔓 [GATE CONTROLLER] Access APPROVED! Sinyal perlintasan valid.`);
-      this.relay.unlock();
-    } else {
-      console.log(`🚨 [GATE CONTROLLER] Access DENIED / FLAGGED! Anomali terdeteksi, notifikasi terkirim.`);
-      this.relay.lock();
-    }
 
     // Feature #5: Auto Q-Value tuning after batch dispatch
     this._autoTuneQValue(tagsArray.length);
@@ -1041,9 +1286,9 @@ class GateBridgeApp {
   stop() {
     console.log('🛑 [EDGE BRIDGE] Stopping services...');
     // Clear all interval timers to prevent resource leak
-    if (this.flushTimer) { clearInterval(this.flushTimer); this.flushTimer = null; }
-    if (this.heartbeatTimer) { clearInterval(this.heartbeatTimer); this.heartbeatTimer = null; }
-    if (this.watchdogTimer) { clearInterval(this.watchdogTimer); this.watchdogTimer = null; }
+    if (this.flushTimer)       { clearInterval(this.flushTimer);       this.flushTimer       = null; }
+    if (this.heartbeatTimer)   { clearInterval(this.heartbeatTimer);   this.heartbeatTimer   = null; }
+    if (this.watchdogTimer)    { clearInterval(this.watchdogTimer);    this.watchdogTimer    = null; }
     if (this.inventoryPollTimer) { clearInterval(this.inventoryPollTimer); this.inventoryPollTimer = null; }
     if (this._syncConfigTimer) { clearInterval(this._syncConfigTimer); this._syncConfigTimer = null; }
     for (const server of this.servers) {
@@ -1059,7 +1304,7 @@ class GateBridgeApp {
     if (this.wss) {
       this.wss.close();
     }
-    if (this.batchCollector.timer) clearTimeout(this.batchCollector.timer);
+    if (this.batchCollector.timer)        clearTimeout(this.batchCollector.timer);
     if (this.batchCollector.deadlineTimer) clearTimeout(this.batchCollector.deadlineTimer);
     // Flush any pending debounced disk writes before exit (#7)
     if (this.cache && typeof this.cache.flushPending === 'function') this.cache.flushPending();
@@ -1067,6 +1312,8 @@ class GateBridgeApp {
     if (this.auditLogger) this.auditLogger.close();
     // Feature #10: Close mesh sync
     if (this.meshSync) this.meshSync.close();
+    // #1/#4: Close SSE stream
+    if (this.api && typeof this.api.closeSse === 'function') this.api.closeSse();
     // R-21: return dispatchChain promise so callers can await pending gate events
     return this.dispatchChain;
   }

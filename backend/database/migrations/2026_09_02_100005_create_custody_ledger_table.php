@@ -17,7 +17,7 @@ return new class extends Migration
             $table->string('tag_epc', 64)->nullable()->index();
             $table->foreignId('item_id')->constrained('items')->cascadeOnDelete();
             $table->foreignId('holder_user_id')->constrained('users')->cascadeOnDelete(); // Responsible person
-            $table->string('action', 50)->index(); // STOCK_IN, PREPARED, GATE_OUT, FIELD_RECEIVED, INSTALLED, FIELD_RETURN, GATE_IN, AUDIT_OPNAME, DAMAGED_WRITE_OFF
+            $table->string('action', 50)->index(); // STOCK_IN, PREPARED, GATE_OUT, FIELD_RECEIVED, INSTALLED, FIELD_RETURN, GATE_IN, AUDIT_OPNAME, DAMAGED_WRITE_OFF, STOCK_WRITE_OFF
             $table->string('ref_type', 100)->nullable(); // Polymorphic model reference (WorkOrder, GateTransaction, Delivery, etc.)
             $table->unsignedBigInteger('ref_id')->nullable();
             $table->foreignId('warehouse_id')->nullable()->constrained('warehouses')->nullOnDelete();

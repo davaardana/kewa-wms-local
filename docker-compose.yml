@@ -60,6 +60,7 @@ services:
       - ./backend:/var/www/backend
       - ./docker/php/www.conf:/usr/local/etc/php-fpm.d/www.conf:ro
       - ./docker/php/uploads.ini:/usr/local/etc/php/conf.d/uploads.ini:ro
+      - ./docker/php/opcache.ini:/usr/local/etc/php/conf.d/opcache-tuning.ini:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -122,7 +123,7 @@ services:
     environment:
       - WAREHOUSE_ID=1
       - GATE_ID=GATE-01
-      - API_BASE_URL=http://nginx/api
+      - API_BASE_URL=${EDGE_API_BASE_URL:-http://nginx/api}
       - DEVICE_API_TOKEN=${DEVICE_API_TOKEN:?DEVICE_API_TOKEN is required}
       - TCP_PORT=2077
       - TCP_PORT_B=2079
@@ -130,17 +131,67 @@ services:
       - WS_ALLOWED_ORIGINS=${WS_ALLOWED_ORIGINS:?WS_ALLOWED_ORIGINS is required}
       - WS_CONTROL_SECRET=${WS_CONTROL_SECRET:?WS_CONTROL_SECRET is required}
       - WS_DEVICE_CODE=${WS_DEVICE_CODE:?WS_DEVICE_CODE is required}
-      - READER_HOST=${READER_HOST:-192.168.1.200}
+      - READER_HOST=${READER_HOST:-192.168.2.200}
       - READER_PORT=2022
       - HEARTBEAT_INTERVAL_MS=10000
       - READER_RESPONSE_TIMEOUT_MS=5000
       - RF_POWER_DBM=${RF_POWER_DBM:-30}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - ENABLE_DIRECT_READER=${ENABLE_DIRECT_READER:-true}
+      - BATCH_IDLE_MS=300
+      - BATCH_DEADLINE_MS=3000
     depends_on:
       - nginx
+    healthcheck:
+      # Cek port WS 2078 bisa di-reach — kalau process Node crash/stuck port tidak terbuka
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 2078 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
     networks:
       - mosa-network
 
-  # 6. Cloudflare Zero Trust Secure Tunnel (Expose Local PC to Custom Domain without Public IP)
+  # 6. Laravel Queue Worker (BroadcastToEdgeBridgeJob & other async jobs)
+  queue-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: mosa-queue-worker
+    restart: unless-stopped
+    environment:
+      APP_ENV: production
+      APP_DEBUG: "false"
+      APP_KEY: ${APP_KEY:?APP_KEY is required}
+      DB_CONNECTION: pgsql
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_DATABASE: mosa_wms
+      DB_USERNAME: mosa_user
+      DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
+      WS_CONTROL_SECRET: ${WS_CONTROL_SECRET:?WS_CONTROL_SECRET is required}
+      WS_CONTROL_PILOT_URL: ${WS_CONTROL_PILOT_URL:-}
+      WS_CONTROL_PILOT_WAREHOUSE_ID: ${WS_CONTROL_PILOT_WAREHOUSE_ID:-}
+      ALLOW_HYBRID_DEVICE: ${ALLOW_HYBRID_DEVICE:-false}
+    volumes:
+      - ./backend:/var/www/backend
+      - ./docker/php/uploads.ini:/usr/local/etc/php/conf.d/uploads.ini:ro
+      - ./docker/php/opcache.ini:/usr/local/etc/php/conf.d/opcache-tuning.ini:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    command: ["php", "artisan", "queue:work", "--sleep=3", "--tries=3", "--timeout=60", "--queue=broadcasts,default"]
+    healthcheck:
+      test: ["CMD-SHELL", "php artisan queue:monitor default,broadcasts 2>/dev/null | grep -q OK || exit 0"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - mosa-network
+
+  # 7. Cloudflare Zero Trust Secure Tunnel (Expose Local PC to Custom Domain without Public IP)
   cloudflared:
     image: cloudflare/cloudflared:2025.9.1
     container_name: mosa-cloudflared

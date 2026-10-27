@@ -106,8 +106,9 @@ Gate tetap terkunci bila sesi tidak ada/expired/terminal, device/gudang tidak co
 - Heartbeat default 10 detik; configurable.
 - Status Edge dan reader dipisahkan. Edge offline membuat status reader `unknown`.
 - WebSocket Edge menyediakan aliran lokal dan control commands setelah autentikasi tiket.
-- `/gate/live-feed` menyediakan polling HTTP.
-- `/gate/stream` menyediakan SSE dengan polling 1,5 detik dan koneksi sekitar 10 detik. Endpoint ini menahan worker selama koneksi; bukan jalur berskala besar.
+- `/gate/live-feed` menyediakan polling HTTP dengan cursor `since_id` dan payload ringkas.
+- `/gate/stream` menyediakan SSE dengan cursor resume, heartbeat 1,5 detik, dan koneksi sekitar 10 detik. Endpoint ini menahan worker selama koneksi; bukan jalur berskala besar.
+- Gate Monitor memakai WebSocket Edge saat dapat dijangkau, SSE VPS sebagai fallback, lalu polling HTTP jika SSE gagal. Pembacaan tag live dibatch per frame UI; keputusan server tetap direkonsiliasi dengan event audit tersimpan.
 
 ## Custody dan Data
 

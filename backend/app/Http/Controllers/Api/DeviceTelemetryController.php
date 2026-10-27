@@ -62,7 +62,7 @@ class DeviceTelemetryController extends Controller
         }
 
         if ($request->boolean('handheld_eligible')) {
-            $roles = ['enrollment_desktop'];
+            $roles = ['enrollment_desktop', 'gate_controller'];
             if (config('services.ws_control.allow_hybrid_device')) $roles[] = 'hybrid_workstation';
             $query->where('is_active', true)->whereIn('device_role', $roles);
         }
@@ -251,7 +251,7 @@ class DeviceTelemetryController extends Controller
             'ip_address' => 'nullable|string|max:50',
             'tcp_port' => 'nullable|integer',
             'metrics' => 'nullable|array',
-            'metrics.reader_status' => 'nullable|string|in:connecting,responsive,unresponsive,disconnected,disabled,unknown',
+            'metrics.reader_status' => 'nullable|string|in:connecting,responsive,unresponsive,disconnected,disabled,unknown,unpaired',
             'metrics.reader_last_response_at' => 'nullable|date',
             'metrics.reader_status_changed_at' => 'nullable|date',
             'metrics.reader_error' => 'nullable|string|max:500',
@@ -327,15 +327,40 @@ class DeviceTelemetryController extends Controller
     public function config(Request $request): JsonResponse
     {
         $device = $request->attributes->get('gate_device')->load('warehouse');
-        // Find approved shipping document at this warehouse (at most 1 active)
-        $activeDoc = ShippingDocument::where('warehouse_id', $device->warehouse_id)
-            ->whereIn('status', ['approved', 'in_progress'])
-            ->orderBy('id')
-            ->first(['id', 'document_number', 'type', 'status']);
+        $authorizedDocument = null;
+        if ($device->warehouse->gate_mode === 'SINGLE_ANTENNA_SESSION') {
+            // Prioritas: in_progress > approved > draft (satu dokumen aktif per warehouse)
+            $activeDocs = ShippingDocument::where('warehouse_id', $device->warehouse_id)
+                ->whereIn('status', ['draft', 'approved', 'in_progress'])
+                ->orderByRaw("CASE status WHEN 'in_progress' THEN 0 WHEN 'approved' THEN 1 WHEN 'draft' THEN 2 END")
+                ->orderBy('id')
+                ->limit(2)
+                ->get(['id', 'document_number', 'type', 'status']);
+            if ($activeDocs->count() === 1) {
+                $authorizedDocument = $activeDocs->first();
+            } elseif ($activeDocs->count() > 1
+                && $activeDocs->first()->status !== $activeDocs->last()->status) {
+                // Beda status: ambil yang prioritas tertinggi (in_progress > approved > draft)
+                $authorizedDocument = $activeDocs->first();
+            }
+            // >1 dokumen dengan status sama (misal: 2 in_progress) → ambiguitas → tetap null
+
+            // Sertakan epc_list tag yang sudah di-assign ke dokumen aktif
+            // Edge bridge membutuhkan ini untuk optimistic local gate evaluation
+            if ($authorizedDocument) {
+                $epcList = \App\Models\ShippingDocumentTag::where('shipping_document_id', $authorizedDocument->id)
+                    ->pluck('tag_epc')
+                    ->map(fn($e) => strtoupper($e))
+                    ->values()
+                    ->all();
+                $authorizedDocument = $authorizedDocument->toArray();
+                $authorizedDocument['epc_list'] = $epcList;
+            }
+        }
 
         return response()->json([
             'device'               => $device,
-            'authorized_document'  => $activeDoc,
+            'authorized_document'  => $authorizedDocument,
         ]);
     }
 }

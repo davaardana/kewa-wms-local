@@ -1,10 +1,12 @@
 <?php
 
+use App\Http\Middleware\AuthenticateGateDevice;
+use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
 use Illuminate\Http\Request;
-use App\Http\Middleware\AuthenticateGateDevice;
+use Illuminate\Support\Facades\RateLimiter;
 
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
@@ -28,4 +30,28 @@ return Application::configure(basePath: dirname(__DIR__))
         $exceptions->shouldRenderJsonWhen(
             fn (Request $request) => $request->is('api/*') || $request->expectsJson(),
         );
-    })->create();
+    })
+    ->booted(function (): void {
+        // ── #5 Rate Limiting ────────────────────────────────────────────────────
+
+        // Login: 10 percobaan per menit per IP — cegah brute force
+        RateLimiter::for('login', function (Request $request): Limit {
+            return Limit::perMinute(10)->by($request->ip());
+        });
+
+        // Gate events: 120 per menit per device_token — hardware RFID bisa rapid-fire
+        RateLimiter::for('gate-events', function (Request $request): Limit {
+            return Limit::perMinute(120)->by(
+                $request->header('X-Device-Token') ?? $request->ip()
+            );
+        });
+
+        // General API: 300 per menit per user (Sanctum-authenticated)
+        RateLimiter::for('api', function (Request $request): Limit {
+            return Limit::perMinute(300)->by(
+                $request->user()?->id ?? $request->ip()
+            );
+        });
+    })
+    ->create();
+

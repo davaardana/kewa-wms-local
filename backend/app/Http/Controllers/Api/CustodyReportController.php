@@ -10,6 +10,7 @@ use App\Models\Item;
 use App\Models\RfidTag;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 
 class CustodyReportController extends Controller
@@ -80,7 +81,7 @@ class CustodyReportController extends Controller
     }
 
     /**
-     * Serialized-item warehouse movements. Only STOCK_IN and GATE_OUT change balance.
+    * Serialized-item warehouse movements. STOCK_IN adds stock; GATE_OUT and STOCK_WRITE_OFF remove it.
      */
     public function stockCard(Request $request): JsonResponse
     {
@@ -105,7 +106,7 @@ class CustodyReportController extends Controller
             ->where('warehouse_id', $validated['warehouse_id'])
             ->where('item_id', $validated['item_id'])
             ->whereNotNull('tag_epc')
-            ->whereIn('action', ['STOCK_IN', 'GATE_OUT']);
+            ->whereIn('action', ['STOCK_IN', 'GATE_OUT', 'STOCK_WRITE_OFF']);
 
         $openingBalance = (clone $movementQuery)
             ->where('created_at', '<', $validated['date_from'].' 00:00:00')
@@ -134,13 +135,14 @@ class CustodyReportController extends Controller
         $runningBalance = (int) $openingBalance + $beforePageBalance;
         $movements->getCollection()->transform(function ($movement) use (&$runningBalance) {
             $isInbound = $movement->action === 'STOCK_IN';
+            $isWriteOff = $movement->action === 'STOCK_WRITE_OFF';
             $runningBalance += $isInbound ? 1 : -1;
 
             return [
                 'id' => $movement->id,
                 'created_at' => $movement->created_at,
                 'action' => $movement->action,
-                'direction' => $isInbound ? 'IN' : 'OUT',
+                'direction' => $isWriteOff ? 'WRITE_OFF' : ($isInbound ? 'IN' : 'OUT'),
                 'tag_epc' => $movement->tag_epc,
                 'qty_in' => $isInbound ? 1 : 0,
                 'qty_out' => $isInbound ? 0 : 1,
@@ -159,50 +161,72 @@ class CustodyReportController extends Controller
 
     /**
      * Complete Chain of Custody Audit Trail.
+     * #5 Percepatan: pagination configurable via per_page (default 50, max 100).
      */
     public function auditTrail(Request $request): JsonResponse
     {
+        $validated = $request->validate([
+            'tag_epc'        => 'nullable|string|max:64',
+            'item_id'        => 'nullable|integer|exists:items,id',
+            'holder_user_id' => 'nullable|integer|exists:users,id',
+            'action'         => 'nullable|string|in:GATE_IN,GATE_OUT,STOCK_IN,STOCK_WRITE_OFF,TRANSFER',
+            'warehouse_id'   => 'nullable|integer|exists:warehouses,id',
+            'per_page'       => 'nullable|integer|min:1|max:100',
+        ]);
+
         $query = CustodyLedger::with(['item', 'holder', 'warehouse', 'rfidTag']);
 
-        if ($request->filled('tag_epc')) {
-            $query->where('tag_epc', $request->tag_epc);
+        if (!empty($validated['tag_epc'])) {
+            $query->where('tag_epc', $validated['tag_epc']);
+        }
+        if (!empty($validated['item_id'])) {
+            $query->where('item_id', $validated['item_id']);
+        }
+        if (!empty($validated['holder_user_id'])) {
+            $query->where('holder_user_id', $validated['holder_user_id']);
+        }
+        if (!empty($validated['action'])) {
+            $query->where('action', $validated['action']);
+        }
+        if (!empty($validated['warehouse_id'])) {
+            $query->where('warehouse_id', $validated['warehouse_id']);
         }
 
-        if ($request->filled('item_id')) {
-            $query->where('item_id', $request->item_id);
-        }
-
-        if ($request->filled('holder_user_id')) {
-            $query->where('holder_user_id', $request->holder_user_id);
-        }
-
-        if ($request->filled('action')) {
-            $query->where('action', $request->action);
-        }
-
-        if ($request->filled('warehouse_id')) {
-            $query->where('warehouse_id', $request->warehouse_id);
-        }
-
-        $logs = $query->orderBy('created_at', 'desc')->paginate(50);
+        $perPage = (int) ($validated['per_page'] ?? 50);
+        $logs    = $query->orderBy('created_at', 'desc')->paginate($perPage);
 
         return response()->json($logs);
     }
 
     /**
      * Dashboard Statistics & Live Overview KPIs.
+     * #2 Percepatan: hasil di-cache 60 detik — 6 COUNT query tidak jalan tiap 30 detik polling FE.
      */
     public function dashboardKpis(Request $request): JsonResponse
     {
-        $totalTags         = RfidTag::count();
-        $activeTags        = RfidTag::where('status', 'active')->count();
-        $totalItems        = Item::count();
-        $activeShippingDocs = ShippingDocument::whereIn('status', ['approved', 'in_progress'])->count();
-        $draftDocs         = ShippingDocument::where('status', 'draft')->count();
-        $completedToday    = ShippingDocument::where('status', 'completed')
-            ->whereDate('updated_at', today())
-            ->count();
+        // Metrics: satu raw query menggantikan 6 query terpisah
+        $metrics = Cache::remember('dashboard-kpis-metrics', 60, function () {
+            $row = DB::selectOne("
+                SELECT
+                    (SELECT COUNT(*) FROM rfid_tags)                                           AS total_tags,
+                    (SELECT COUNT(*) FROM rfid_tags WHERE status = 'active')                  AS active_tags,
+                    (SELECT COUNT(*) FROM items)                                               AS total_items,
+                    (SELECT COUNT(*) FROM shipping_documents WHERE status IN ('approved','in_progress') AND archived_at IS NULL) AS active_shipping_docs,
+                    (SELECT COUNT(*) FROM shipping_documents WHERE status = 'draft' AND archived_at IS NULL)           AS draft_docs,
+                    (SELECT COUNT(*) FROM shipping_documents WHERE status = 'completed' AND DATE(updated_at) = CURRENT_DATE) AS completed_today
+            ");
 
+            return [
+                'total_tags'           => (int) $row->total_tags,
+                'active_tags'          => (int) $row->active_tags,
+                'total_items'          => (int) $row->total_items,
+                'active_shipping_docs' => (int) $row->active_shipping_docs,
+                'draft_docs'           => (int) $row->draft_docs,
+                'completed_today'      => (int) $row->completed_today,
+            ];
+        });
+
+        // Recent events: live (tidak di-cache karena perlu real-time)
         $recentPassEvents = GatePassEvent::with([
                 'warehouse:id,name,code',
                 'shippingDocument:id,document_number,type,status',
@@ -221,14 +245,7 @@ class CustodyReportController extends Controller
             ->get();
 
         return response()->json([
-            'metrics' => [
-                'total_tags'          => $totalTags,
-                'active_tags'         => $activeTags,
-                'total_items'         => $totalItems,
-                'active_shipping_docs'=> $activeShippingDocs,
-                'draft_docs'          => $draftDocs,
-                'completed_today'     => $completedToday,
-            ],
+            'metrics'            => $metrics,
             'recent_gate_events' => $recentPassEvents,
             'recent_mismatches'  => $recentMismatches,
         ]);
@@ -245,15 +262,23 @@ class CustodyReportController extends Controller
             'scanned_epcs.*' => 'string',
         ]);
 
-        $scannedEpcs = array_unique($validated['scanned_epcs']);
+        $scannedEpcs = collect($validated['scanned_epcs'])
+            ->map(fn ($epc) => strtoupper(trim($epc)))
+            ->filter()
+            ->unique()
+            ->values()
+            ->all();
         $systemTags = RfidTag::where('last_warehouse_id', $validated['warehouse_id'])
             ->where('status', 'active')
             ->pluck('epc')
+            ->map(fn ($epc) => strtoupper(trim($epc)))
+            ->unique()
+            ->values()
             ->toArray();
 
-        $matched = array_intersect($scannedEpcs, $systemTags);
-        $missingInPhysical = array_diff($systemTags, $scannedEpcs);
-        $unexpectedInPhysical = array_diff($scannedEpcs, $systemTags);
+        $matched = array_values(array_intersect($scannedEpcs, $systemTags));
+        $missingInPhysical = array_values(array_diff($systemTags, $scannedEpcs));
+        $unexpectedInPhysical = array_values(array_diff($scannedEpcs, $systemTags));
 
         return response()->json([
             'total_system_expected' => count($systemTags),
@@ -261,8 +286,8 @@ class CustodyReportController extends Controller
             'matched_count' => count($matched),
             'missing_count' => count($missingInPhysical),
             'unexpected_count' => count($unexpectedInPhysical),
-            'missing_epcs' => array_values($missingInPhysical),
-            'unexpected_epcs' => array_values($unexpectedInPhysical),
+            'missing_epcs' => $missingInPhysical,
+            'unexpected_epcs' => $unexpectedInPhysical,
         ]);
     }
 }

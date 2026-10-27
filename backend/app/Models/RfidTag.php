@@ -20,12 +20,16 @@ class RfidTag extends Model
         'project_id',
         'last_read_at',
         'notes',
+        'total_length_m',
+        'remaining_length_m',
     ];
 
     protected function casts(): array
     {
         return [
-            'last_read_at' => 'datetime',
+            'last_read_at'       => 'datetime',
+            'total_length_m'     => 'decimal:3',
+            'remaining_length_m' => 'decimal:3',
         ];
     }
 

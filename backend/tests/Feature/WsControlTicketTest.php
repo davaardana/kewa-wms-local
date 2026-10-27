@@ -87,7 +87,7 @@ class WsControlTicketTest extends TestCase
         ])->assertUnprocessable();
     }
 
-    public function test_handheld_mode_rejects_gate_and_disabled_hybrid_devices(): void
+    public function test_handheld_mode_accepts_gate_and_still_rejects_disabled_hybrid_devices(): void
     {
         config(['services.ws_control.secret' => str_repeat('s', 32), 'services.ws_control.allow_hybrid_device' => false]);
         $principal = Principal::create(['name' => 'Test', 'code' => 'HH']);
@@ -97,7 +97,7 @@ class WsControlTicketTest extends TestCase
         $payload = ['warehouse_id' => $warehouse->id, 'requested_commands' => ['SET_MODE:ENROLLMENT']];
 
         $gate = GateDevice::create(['warehouse_id' => $warehouse->id, 'device_code' => 'HH-GATE', 'device_name' => 'Gate', 'device_role' => 'gate_controller', 'edge_ws_url' => 'wss://gate.example.test']);
-        $this->actingAs($user, 'sanctum')->postJson('/api/ws-control-ticket', [...$payload, 'device_id' => $gate->id])->assertForbidden();
+        $this->actingAs($user, 'sanctum')->postJson('/api/ws-control-ticket', [...$payload, 'device_id' => $gate->id])->assertOk();
 
         $hybrid = GateDevice::create(['warehouse_id' => $warehouse->id, 'device_code' => 'HH-HYBRID', 'device_name' => 'Hybrid', 'device_role' => 'hybrid_workstation', 'edge_ws_url' => 'wss://hybrid.example.test']);
         $this->postJson('/api/ws-control-ticket', [...$payload, 'device_id' => $hybrid->id])->assertForbidden();

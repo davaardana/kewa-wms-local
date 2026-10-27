@@ -1,0 +1,4 @@
+services:
+  edge-bridge:
+    environment:
+      - API_BASE_URL=http://206.237.98.48/api

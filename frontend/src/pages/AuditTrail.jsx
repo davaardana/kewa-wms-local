@@ -24,11 +24,14 @@ import {
   Eye,
   Boxes,
   History,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
 
 export default function Laporan({ defaultTab = 'trail', currentUser = null }) {
   const [logs, setLogs] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [auditPagination, setAuditPagination] = useState({ current_page: 1, last_page: 1, total: 0 });
   const [searchTerm, setSearchTerm] = useState('');
   const [actionFilter, setActionFilter] = useState('');
   const [activeTab, setActiveTab] = useState(defaultTab); // 'trail' | 'opname' | 'stock'
@@ -109,14 +112,20 @@ export default function Laporan({ defaultTab = 'trail', currentUser = null }) {
     };
   }, [selectedWarehouseId]);
 
-  const loadAuditTrail = async () => {
+  const loadAuditTrail = async (page = 1) => {
     setLoading(true);
     try {
       const res = await reportApi.getAuditTrail({
         action: actionFilter || undefined,
         tag_epc: searchTerm || undefined,
+        page,
       });
       setLogs(res.data.data || res.data);
+      setAuditPagination({
+        current_page: res.data.current_page || page,
+        last_page: res.data.last_page || 1,
+        total: res.data.total ?? (Array.isArray(res.data) ? res.data.length : 0),
+      });
     } catch (err) {
       console.error('Error loading audit trail:', err);
       showToast('Gagal memuat audit trail', 'error');
@@ -130,8 +139,13 @@ export default function Laporan({ defaultTab = 'trail', currentUser = null }) {
       setWarehouses(res.data);
       setSelectedWarehouseId((current) => current || String(res.data[0]?.id || ''));
     });
-    loadAuditTrail();
+    loadAuditTrail(1);
   }, [actionFilter]);
+
+  const hasOpnameMismatch = (result = opnameResult) => {
+    if (!result) return false;
+    return Number(result.missing_count || 0) > 0 || Number(result.unexpected_count || 0) > 0;
+  };
 
   const handleRunOpname = async () => {
     const epcList = opnameEpcs
@@ -148,8 +162,13 @@ export default function Laporan({ defaultTab = 'trail', currentUser = null }) {
       const res = await reportApi.reconcileStockOpname(parseInt(selectedWarehouseId, 10), epcList);
       setOpnameResult(res.data);
       setShowOpnamePreviewModal(true);
-      if (res.data.missing_count > 0) {
-        showToast(`Pratinjau: Ditemukan ${res.data.missing_count} tag hilang dari gudang!`, 'warning');
+
+      const totalMismatch = (res.data.missing_count || 0) + (res.data.unexpected_count || 0);
+      if (totalMismatch > 0) {
+        const detailParts = [];
+        if (res.data.missing_count > 0) detailParts.push(`${res.data.missing_count} tag hilang`);
+        if (res.data.unexpected_count > 0) detailParts.push(`${res.data.unexpected_count} tag asing`);
+        showToast(`Pratinjau: Ditemukan selisih fisik (${detailParts.join(' + ')}).`, 'warning');
       } else {
         showToast('Pratinjau: Stock Opname 100% Cocok dengan Sistem!', 'success');
       }
@@ -164,6 +183,7 @@ export default function Laporan({ defaultTab = 'trail', currentUser = null }) {
     const whName = wh ? `${wh.name} (${wh.code})` : 'Gudang Target';
     const auditorName = currentUser?.name || 'Petugas Storeroom';
     const dateStr = new Date().toLocaleString('id-ID', { dateStyle: 'long', timeStyle: 'short' });
+    const isFullMatch = !hasOpnameMismatch(opnameResult);
 
     const printWindow = window.open('', '_blank');
     if (!printWindow) {
@@ -171,6 +191,7 @@ export default function Laporan({ defaultTab = 'trail', currentUser = null }) {
       return;
     }
 
+    const totalDiscrepancies = (opnameResult.missing_count || 0) + (opnameResult.unexpected_count || 0);
     const missingListHtml = opnameResult.missing_epcs?.length > 0
       ? opnameResult.missing_epcs.map(epc => `<li style="font-family: monospace; color: #b91c1c; padding: 2px 0;">❌ ${epc}</li>`).join('')
       : '<li><em>Nihil / Tidak ada selisih hilang</em></li>';
@@ -208,8 +229,8 @@ export default function Laporan({ defaultTab = 'trail', currentUser = null }) {
               Nomor Dokumen: BAP-OPN-${Date.now().toString().slice(-6)} · Tanggal: ${dateStr}<br/>
               Gudang: <strong>${whName}</strong> · Auditor Pemeriksa: <strong>${auditorName}</strong>
             </div>
-            <span class="badge ${opnameResult.missing_count === 0 ? 'badge-match' : 'badge-mismatch'}">
-              ${opnameResult.missing_count === 0 ? 'HASIL: 100% MATCH (LENGKAP)' : 'HASIL: TERDETEKSI SELISIH KURANG (MISMATCH)'}
+            <span class="badge ${isFullMatch ? 'badge-match' : 'badge-mismatch'}">
+              ${isFullMatch ? 'HASIL: 100% MATCH (LENGKAP)' : `HASIL: TERDETEKSI SELISIH (${totalDiscrepancies} TAG, MISMATCH)`}
             </span>
           </div>
 
@@ -253,11 +274,18 @@ export default function Laporan({ defaultTab = 'trail', currentUser = null }) {
 
   const handleEscalateOpnameAnomaly = () => {
     if (!opnameResult) return;
+
+    if (!hasOpnameMismatch(opnameResult)) {
+      setShowOpnamePreviewModal(false);
+      showToast('Tidak ada selisih opname untuk dieskalasi; kondisi saat ini sudah sesuai dengan sistem.', 'info');
+      return;
+    }
+
     setOpnameInvestigating(true);
     setTimeout(() => {
       setOpnameInvestigating(false);
       setShowOpnamePreviewModal(false);
-      showToast('🚨 Tiket Berita Acara & Permintaan Investigasi Selisih berhasil diteruskan ke PM & Manajemen!', 'success');
+      showToast('📌 Catatan investigasi selisih opname sudah disiapkan untuk review PM/Manajemen. Tidak ada perubahan status stok atau ledger yang dibuat.', 'info');
     }, 600);
   };
 
@@ -338,14 +366,14 @@ export default function Laporan({ defaultTab = 'trail', currentUser = null }) {
                   placeholder="Cari nomor tag EPC..."
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && loadAuditTrail()}
+                  onKeyDown={(e) => e.key === 'Enter' && loadAuditTrail(1)}
                   className="w-full pl-9 pr-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 font-medium placeholder:text-slate-400"
                 />
               </div>
             </div>
 
             <FlameButton
-              onClick={loadAuditTrail}
+              onClick={() => loadAuditTrail(1)}
               height={34}
               flameColor="blue"
               showArrow={false}
@@ -402,6 +430,21 @@ export default function Laporan({ defaultTab = 'trail', currentUser = null }) {
                   )}
                 </tbody>
               </table>
+            </div>
+          </div>
+          <div className="flex items-center justify-between gap-3 text-xs text-slate-500">
+            <span>Halaman {auditPagination.current_page} dari {auditPagination.last_page} · {auditPagination.total} catatan</span>
+            <div className="flex items-center gap-1">
+              <button type="button" onClick={() => loadAuditTrail(auditPagination.current_page - 1)}
+                disabled={loading || auditPagination.current_page <= 1} aria-label="Halaman sebelumnya"
+                className="rounded border border-slate-200 bg-white p-1.5 disabled:opacity-40">
+                <ChevronLeft className="h-3.5 w-3.5" />
+              </button>
+              <button type="button" onClick={() => loadAuditTrail(auditPagination.current_page + 1)}
+                disabled={loading || auditPagination.current_page >= auditPagination.last_page} aria-label="Halaman berikutnya"
+                className="rounded border border-slate-200 bg-white p-1.5 disabled:opacity-40">
+                <ChevronRight className="h-3.5 w-3.5" />
+              </button>
             </div>
           </div>
         </div>
@@ -474,9 +517,9 @@ export default function Laporan({ defaultTab = 'trail', currentUser = null }) {
                 <div className="border-b border-slate-100 pb-3 flex justify-between items-center">
                   <h2 className="text-sm font-bold text-slate-900">Hasil Rekonsiliasi Opname</h2>
                   <span className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded ${
-                    opnameResult.missing_count === 0 ? 'bg-blue-100 text-blue-800' : 'bg-rose-100 text-rose-800'
+                    hasOpnameMismatch(opnameResult) ? 'bg-rose-100 text-rose-800' : 'bg-blue-100 text-blue-800'
                   }`}>
-                    {opnameResult.missing_count === 0 ? '100% MATCH' : 'MISMATCH TERDETEKSI'}
+                    {hasOpnameMismatch(opnameResult) ? 'MISMATCH TERDETEKSI' : '100% MATCH'}
                   </span>
                 </div>
 
@@ -535,41 +578,41 @@ export default function Laporan({ defaultTab = 'trail', currentUser = null }) {
         <Portal>
           <div className="fixed inset-0 z-[100] bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
           <div className={`bg-white rounded-3xl max-w-5xl w-full max-h-[92vh] overflow-y-auto shadow-2xl border p-6 sm:p-8 space-y-5 animate-in fade-in zoom-in-95 duration-150 ${
-            opnameResult.missing_count === 0 ? 'border-blue-200' : 'border-rose-200'
+            hasOpnameMismatch(opnameResult) ? 'border-rose-200' : 'border-blue-200'
           }`}>
             {/* Header Modal */}
             <div className={`flex items-start justify-between border-b pb-4 ${
-              opnameResult.missing_count === 0 ? 'border-blue-100' : 'border-rose-100'
+              hasOpnameMismatch(opnameResult) ? 'border-rose-100' : 'border-blue-100'
             }`}>
               <div className="flex items-center gap-3">
                 <div className={`w-11 h-11 rounded-2xl border flex items-center justify-center font-bold shadow-xs ${
-                  opnameResult.missing_count === 0
-                    ? 'bg-blue-100 border-blue-300 text-blue-700'
-                    : 'bg-rose-100 border-rose-300 text-rose-700'
+                  hasOpnameMismatch(opnameResult)
+                    ? 'bg-rose-100 border-rose-300 text-rose-700'
+                    : 'bg-blue-100 border-blue-300 text-blue-700'
                 }`}>
-                  {opnameResult.missing_count === 0 ? (
-                    <CheckCircle className="w-6 h-6 text-blue-600" />
-                  ) : (
+                  {hasOpnameMismatch(opnameResult) ? (
                     <AlertTriangle className="w-6 h-6 text-rose-600" />
+                  ) : (
+                    <CheckCircle className="w-6 h-6 text-blue-600" />
                   )}
                 </div>
                 <div>
                   <div className="flex items-center gap-2">
                     <span className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded-full border ${
-                      opnameResult.missing_count === 0
-                        ? 'bg-blue-100 text-blue-800 border-blue-300'
-                        : 'bg-rose-100 text-rose-800 border-rose-300'
+                      hasOpnameMismatch(opnameResult)
+                        ? 'bg-rose-100 text-rose-800 border-rose-300'
+                        : 'bg-blue-100 text-blue-800 border-blue-300'
                     }`}>
-                      {opnameResult.missing_count === 0 ? 'PREVIEW: 100% MATCH' : 'PREVIEW: MISMATCH DETECTED'}
+                      {hasOpnameMismatch(opnameResult) ? 'PREVIEW: MISMATCH DETECTED' : 'PREVIEW: 100% MATCH'}
                     </span>
                     <span className="text-xs text-slate-500 font-medium">
                       Gudang: {warehouses.find(w => w.id === parseInt(selectedWarehouseId, 10))?.name || 'Target Yard'}
                     </span>
                   </div>
                   <h2 className="text-base font-black text-slate-900 mt-0.5">
-                    {opnameResult.missing_count === 0
-                      ? 'Pratinjau Opname: Saldo Fisik Sesuai Sempurna dengan Sistem'
-                      : 'Pratinjau Opname: Peringatan Terdeteksi Selisih Fisik di Yard'}
+                    {hasOpnameMismatch(opnameResult)
+                      ? 'Pratinjau Opname: Peringatan Terdeteksi Selisih Fisik di Yard'
+                      : 'Pratinjau Opname: Saldo Fisik Sesuai Sempurna dengan Sistem'}
                   </h2>
                 </div>
               </div>
@@ -585,28 +628,28 @@ export default function Laporan({ defaultTab = 'trail', currentUser = null }) {
 
             {/* Verdict Banner */}
             <div className={`p-4 rounded-2xl border text-xs flex items-center justify-between ${
-              opnameResult.missing_count === 0
-                ? 'bg-blue-50/70 border-blue-200 text-blue-900'
-                : 'bg-rose-50/70 border-rose-200 text-rose-900'
+              hasOpnameMismatch(opnameResult)
+                ? 'bg-rose-50/70 border-rose-200 text-rose-900'
+                : 'bg-blue-50/70 border-blue-200 text-blue-900'
             }`}>
               <div className="space-y-0.5">
                 <div className="font-bold flex items-center gap-1.5">
-                  {opnameResult.missing_count === 0 ? (
-                    <span>🎉 Seluruh Material Fisik di Yard Terverifikasi Lengkap 1-ke-1</span>
+                  {hasOpnameMismatch(opnameResult) ? (
+                    <span>⚠️ Terdapat {Number(opnameResult.missing_count || 0) + Number(opnameResult.unexpected_count || 0)} Tag RFID yang Tidak Sesuai dengan Sistem Gudang</span>
                   ) : (
-                    <span>⚠️ Terdapat {opnameResult.missing_count} Tag RFID Terdaftar yang Belum Ditemukan</span>
+                    <span>🎉 Seluruh Material Fisik di Yard Terverifikasi Lengkap 1-ke-1</span>
                   )}
                 </div>
                 <p className="text-[11px] opacity-80">
-                  {opnameResult.missing_count === 0
-                    ? 'Tidak ada susut material atau ketidaksesuaian saldo buku di sistem gudang.'
-                    : 'Periksa kembali rak penyimpanan atau buat Berita Acara untuk eskalasi audit CCTV/perlintasan RFID.'}
+                  {hasOpnameMismatch(opnameResult)
+                    ? 'Periksa kembali rak penyimpanan atau buat Berita Acara untuk eskalasi audit CCTV/perlintasan RFID.'
+                    : 'Tidak ada susut material atau ketidaksesuaian saldo buku di sistem gudang.'}
                 </p>
               </div>
               <span className={`text-[11px] font-bold font-mono px-2.5 py-1 rounded-lg ${
-                opnameResult.missing_count === 0 ? 'bg-blue-100 text-blue-900' : 'bg-rose-200 text-rose-900'
+                hasOpnameMismatch(opnameResult) ? 'bg-rose-200 text-rose-900' : 'bg-blue-100 text-blue-900'
               }`}>
-                {opnameResult.missing_count === 0 ? '100% MATCH' : `${opnameResult.missing_count} KURANG`}
+                {hasOpnameMismatch(opnameResult) ? `${Number(opnameResult.missing_count || 0) + Number(opnameResult.unexpected_count || 0)} SELISIH` : '100% MATCH'}
               </span>
             </div>
 
@@ -634,20 +677,20 @@ export default function Laporan({ defaultTab = 'trail', currentUser = null }) {
                 <div className="text-[10px] text-blue-600">Sesuai Saldo</div>
               </div>
               <div className={`border rounded-2xl p-3 text-center ${
-                opnameResult.missing_count === 0 ? 'bg-blue-50 border-blue-200' : 'bg-rose-50 border-rose-200'
+                hasOpnameMismatch(opnameResult) ? 'bg-rose-50 border-rose-200' : 'bg-blue-50 border-blue-200'
               }`}>
                 <div className={`text-[10px] font-bold uppercase ${
-                  opnameResult.missing_count === 0 ? 'text-blue-700' : 'text-rose-700'
-                }`}>Selisih Hilang</div>
+                  hasOpnameMismatch(opnameResult) ? 'text-rose-700' : 'text-blue-700'
+                }`}>Selisih</div>
                 <div className={`text-lg font-black mt-0.5 font-mono ${
-                  opnameResult.missing_count === 0 ? 'text-blue-700' : 'text-rose-700'
+                  hasOpnameMismatch(opnameResult) ? 'text-rose-700' : 'text-blue-700'
                 }`}>
-                  {opnameResult.missing_count}
+                  {Number(opnameResult.missing_count || 0) + Number(opnameResult.unexpected_count || 0)}
                 </div>
                 <div className={`text-[10px] ${
-                  opnameResult.missing_count === 0 ? 'text-blue-600' : 'text-rose-600'
+                  hasOpnameMismatch(opnameResult) ? 'text-rose-600' : 'text-blue-600'
                 }`}>
-                  {opnameResult.missing_count === 0 ? 'Nihil' : 'Belum Terbaca'}
+                  {hasOpnameMismatch(opnameResult) ? 'Belum Sesuai' : 'Nihil'}
                 </div>
               </div>
             </div>
@@ -721,7 +764,7 @@ export default function Laporan({ defaultTab = 'trail', currentUser = null }) {
                   <span>Cetak Berita Acara Opname (BAP)</span>
                 </FlameButton>
 
-                {opnameResult.missing_count > 0 && (
+                {hasOpnameMismatch(opnameResult) && (
                   <FlameButton
                     type="button"
                     disabled={opnameInvestigating}
@@ -732,7 +775,7 @@ export default function Laporan({ defaultTab = 'trail', currentUser = null }) {
                     text=""
                   >
                     <AlertTriangle className="w-4 h-4" />
-                    <span>{opnameInvestigating ? 'Meneruskan Tiket...' : 'Eskalasi Investigasi ke PM'}</span>
+                    <span>{opnameInvestigating ? 'Membuat Catatan Investigasi...' : 'Eskalasi Investigasi ke PM'}</span>
                   </FlameButton>
                 )}
               </div>

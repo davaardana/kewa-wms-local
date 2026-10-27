@@ -47,6 +47,12 @@ cp .env.deploy.example .env
 # 3. Jalankan service development
 docker compose --env-file .env up -d --build
 
+# Jika Edge berada di LAN lokal dan API di VPS, gunakan override ini untuk Edge:
+docker compose --env-file .env \
+       -f docker-compose.yml \
+       -f docker-compose.local-edge-vps.yml \
+       up -d --build edge-bridge
+
 # 4. Inisialisasi schema dan seed secara eksplisit
 docker compose --env-file .env exec backend php artisan migrate --force
 docker compose --env-file .env exec backend php artisan db:seed --force

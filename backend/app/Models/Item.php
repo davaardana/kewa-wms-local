@@ -17,6 +17,7 @@ class Item extends Model
         'is_metal',
         'is_reusable',
         'is_serialized_tag',
+        'is_length_based',
         'unit',
         'min_stock',
         'description',
@@ -28,10 +29,11 @@ class Item extends Model
     protected function casts(): array
     {
         return [
-            'is_metal' => 'boolean',
-            'is_reusable' => 'boolean',
+            'is_metal'          => 'boolean',
+            'is_reusable'       => 'boolean',
             'is_serialized_tag' => 'boolean',
-            'min_stock' => 'integer',
+            'is_length_based'   => 'boolean',
+            'min_stock'         => 'integer',
             'epc_suffix_digits' => 'integer',
             'epc_next_sequence' => 'integer',
         ];

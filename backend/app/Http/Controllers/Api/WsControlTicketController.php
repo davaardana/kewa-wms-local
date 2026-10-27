@@ -15,6 +15,7 @@ class WsControlTicketController extends Controller
 {
     private const COMMAND_PERMISSIONS = [
         'PING' => ['gate_monitor', 'tag_enrollment', 'audit_trail'],
+        'TEST_READER_CONNECTION' => ['gate_monitor', 'tag_enrollment'],
         'GET_MODE' => ['gate_monitor', 'tag_enrollment'],
         'SET_MODE:GATE_SECURITY' => ['gate_monitor'],
         'SET_MODE:ENROLLMENT' => ['tag_enrollment', 'dispatch_scan', 'receiving_scan'],
@@ -60,7 +61,9 @@ class WsControlTicketController extends Controller
         abort_if($matches->count() !== 1, 409, 'Multiple active devices; device_id is required.');
         $device = $matches->first();
         if (in_array('SET_MODE:ENROLLMENT', $validated['requested_commands'], true)) {
-            abort_unless(in_array($device->device_role, ['enrollment_desktop', 'hybrid_workstation'], true), 403, 'Device tidak mendukung scan handheld.');
+            $enrollmentCapableRoles = ['enrollment_desktop', 'gate_controller'];
+            if (config('services.ws_control.allow_hybrid_device')) $enrollmentCapableRoles[] = 'hybrid_workstation';
+            abort_unless(in_array($device->device_role, $enrollmentCapableRoles, true), 403, 'Device tidak mendukung scan handheld.');
             abort_if($device->device_role === 'hybrid_workstation'
                 && !config('services.ws_control.allow_hybrid_device'), 403, 'Hybrid workstation tidak tersedia pada environment ini.');
         }

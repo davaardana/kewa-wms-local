@@ -1,13 +1,15 @@
 import { FlameButton } from '../components/ui/flame-button';
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useTransition } from 'react';
 import { shippingApi, masterApi, tagApi } from '../services/api';
 import { showToast } from '../components/Toast';
 import { showConfirm } from '../components/ConfirmDialog';
+import { SkeletonTable } from '../components/ui/skeleton-loader';
 import {
   FileText, Plus, CheckCircle, XCircle, Clock, Package,
   ArrowDownCircle, ArrowUpCircle, Search, Filter, Eye,
   ChevronLeft, Tag, Scan, AlertTriangle, RefreshCw,
-  Truck, Warehouse as WhIcon, X, Check, Loader2, Box
+  Truck, Warehouse as WhIcon, X, Check, Loader2, Box, ShieldCheck, Pencil, Trash2,
+  LayoutGrid, List
 } from 'lucide-react';
 
 // ─── Status Badge Component ───
@@ -59,7 +61,8 @@ const ProgressBar = ({ scanned, total, compact = false }) => {
 };
 
 // ─── Create Document Modal ───
-const CreateDocModal = ({ isOpen, onClose, onCreated, warehouses, items }) => {
+const CreateDocModal = ({ isOpen, onClose, onCreated, warehouses, items, documentToEdit = null }) => {
+  const isOperationalEdit = Boolean(documentToEdit && documentToEdit.status !== 'draft');
   const [type, setType] = useState('inbound');
   const [warehouseId, setWarehouseId] = useState('');
   const [notes, setNotes] = useState('');
@@ -69,10 +72,31 @@ const CreateDocModal = ({ isOpen, onClose, onCreated, warehouses, items }) => {
   const [uploading, setUploading] = useState(false);
   const fileRef = React.useRef(null);
 
+  useEffect(() => {
+    if (!isOpen) return;
+    if (documentToEdit) {
+      setType(documentToEdit.type || 'inbound');
+      setWarehouseId(String(documentToEdit.warehouse_id || ''));
+      setNotes(documentToEdit.notes || '');
+      setDocItems((documentToEdit.items || []).map(item => ({ item_id: String(item.item_id), expected_qty: Number(item.expected_qty) || 1 })));
+      setAttachments(documentToEdit.attachments || []);
+    } else {
+      setType('inbound');
+      setWarehouseId('');
+      setNotes('');
+      setDocItems([{ item_id: '', expected_qty: 1 }]);
+      setAttachments([]);
+    }
+  }, [isOpen, documentToEdit]);
+
   const addItem = () => setDocItems([...docItems, { item_id: '', expected_qty: 1 }]);
   const removeItem = (idx) => setDocItems(docItems.filter((_, i) => i !== idx));
   const updateItem = (idx, field, value) => {
     const updated = [...docItems];
+    if (field === 'item_id' && value && updated.some((item, itemIdx) => itemIdx !== idx && item.item_id === value)) {
+      showToast('Barang tersebut sudah dipilih. Ubah jumlah pada baris yang sudah ada.', 'error');
+      return;
+    }
     updated[idx][field] = field === 'expected_qty' ? parseInt(value) || 1 : value;
     setDocItems(updated);
   };
@@ -128,21 +152,21 @@ const CreateDocModal = ({ isOpen, onClose, onCreated, warehouses, items }) => {
     if (!warehouseId) { showToast('Pilih gudang.', 'error'); return; }
     setLoading(true);
     try {
-      const res = await shippingApi.createDocument({
-        type,
-        warehouse_id: parseInt(warehouseId),
-        notes: notes || null,
-        items: validItems,
-        attachments: attachments.length > 0 ? attachments : null,
-      });
-      showToast('Dokumen berhasil dibuat!', 'success');
+      const payload = isOperationalEdit
+        ? { notes: notes || null, attachments: attachments.length > 0 ? attachments : null }
+        : {
+            type,
+            warehouse_id: parseInt(warehouseId),
+            notes: notes || null,
+            items: validItems,
+            attachments: attachments.length > 0 ? attachments : null,
+          };
+      const res = documentToEdit
+        ? await shippingApi.updateDocument(documentToEdit.id, payload)
+        : await shippingApi.createDocument(payload);
+      showToast(documentToEdit ? 'Draft dokumen berhasil diperbarui.' : 'Dokumen berhasil dibuat!', 'success');
       onCreated(res.data.document);
       onClose();
-      setDocItems([{ item_id: '', expected_qty: 1 }]);
-      setNotes('');
-      setAttachments([]);
-      setWarehouseId('');
-      setType('inbound');
     } catch (err) {
       showToast(err.response?.data?.message || 'Gagal membuat dokumen.', 'error');
     } finally {
@@ -154,25 +178,25 @@ const CreateDocModal = ({ isOpen, onClose, onCreated, warehouses, items }) => {
 
   return (
     <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={onClose}>
-      <div className="bg-white rounded-2xl shadow-2xl max-w-lg w-full max-h-[92vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+      <div className="bg-white rounded-2xl shadow-2xl w-[calc(100vw-2rem)] max-w-lg max-h-[92vh] overflow-x-hidden overflow-y-auto" onClick={e => e.stopPropagation()}>
         <div className="p-5 border-b border-slate-100">
           <div className="flex items-center justify-between">
             <h2 className="text-base font-bold text-slate-800 flex items-center gap-2">
-              <Plus className="w-4 h-4 text-blue-600" /> Buat Dokumen Baru
+              <Plus className="w-4 h-4 text-blue-600" /> {documentToEdit ? (isOperationalEdit ? 'Edit Catatan/Lampiran' : 'Edit Draft Dokumen') : 'Buat Dokumen Baru'}
             </h2>
             <button onClick={onClose} className="p-1 rounded-lg hover:bg-slate-100 text-slate-400"><X className="w-4 h-4" /></button>
           </div>
         </div>
         <form onSubmit={handleSubmit} className="p-5 space-y-4">
           <div className="grid grid-cols-2 gap-2">
-            <button type="button" onClick={() => setType('inbound')}
-              className={`p-3 rounded-xl border-2 text-center transition ${type === 'inbound' ? 'border-blue-500 bg-blue-50' : 'border-slate-200 hover:border-slate-300'}`}>
+            <button type="button" disabled={isOperationalEdit} onClick={() => setType('inbound')}
+              className={`p-3 rounded-xl border-2 text-center transition disabled:cursor-not-allowed disabled:opacity-70 ${type === 'inbound' ? 'border-blue-500 bg-blue-50' : 'border-slate-200 hover:border-slate-300'}`}>
               <ArrowDownCircle className={`w-5 h-5 mx-auto mb-1 ${type === 'inbound' ? 'text-blue-600' : 'text-slate-400'}`} />
               <div className="text-xs font-bold">Barang Masuk</div>
               <div className="text-[10px] text-slate-500">Inbound</div>
             </button>
-            <button type="button" onClick={() => setType('outbound')}
-              className={`p-3 rounded-xl border-2 text-center transition ${type === 'outbound' ? 'border-blue-500 bg-blue-50' : 'border-slate-200 hover:border-slate-300'}`}>
+            <button type="button" disabled={isOperationalEdit} onClick={() => setType('outbound')}
+              className={`p-3 rounded-xl border-2 text-center transition disabled:cursor-not-allowed disabled:opacity-70 ${type === 'outbound' ? 'border-blue-500 bg-blue-50' : 'border-slate-200 hover:border-slate-300'}`}>
               <ArrowUpCircle className={`w-5 h-5 mx-auto mb-1 ${type === 'outbound' ? 'text-blue-600' : 'text-slate-400'}`} />
               <div className="text-xs font-bold">Barang Keluar</div>
               <div className="text-[10px] text-slate-500">Outbound</div>
@@ -181,7 +205,7 @@ const CreateDocModal = ({ isOpen, onClose, onCreated, warehouses, items }) => {
 
           <div>
             <label className="block text-xs font-semibold text-slate-700 mb-1">Gudang</label>
-            <select value={warehouseId} onChange={e => setWarehouseId(e.target.value)} required
+            <select value={warehouseId} onChange={e => setWarehouseId(e.target.value)} required disabled={isOperationalEdit}
               className="w-full p-2.5 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
               <option value="">Pilih gudang...</option>
               {warehouses.map(w => <option key={w.id} value={w.id}>{w.name} ({w.code})</option>)}
@@ -191,28 +215,42 @@ const CreateDocModal = ({ isOpen, onClose, onCreated, warehouses, items }) => {
           <div>
             <div className="flex items-center justify-between mb-2">
               <label className="text-xs font-semibold text-slate-700">Daftar Barang</label>
-              <button type="button" onClick={addItem} className="text-[10px] font-semibold text-blue-600 hover:text-blue-700 flex items-center gap-1">
+              {!isOperationalEdit && <button type="button" onClick={addItem} className="text-[10px] font-semibold text-blue-600 hover:text-blue-700 flex items-center gap-1">
                 <Plus className="w-3 h-3" /> Tambah
-              </button>
+              </button>}
             </div>
             <div className="space-y-2">
               {docItems.map((di, idx) => (
-                <div key={idx} className="flex gap-2 items-start">
-                  <select value={di.item_id} onChange={e => updateItem(idx, 'item_id', e.target.value)} required
-                    className="flex-1 p-2 border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-blue-500 focus:outline-none">
-                    <option value="">Pilih item...</option>
-                    {items.map(it => <option key={it.id} value={it.id}>{it.name} ({it.code})</option>)}
-                  </select>
-                  <input type="number" min="1" value={di.expected_qty} onChange={e => updateItem(idx, 'expected_qty', e.target.value)}
-                    className="w-20 p-2 border border-slate-200 rounded-lg text-xs text-center focus:ring-2 focus:ring-blue-500 focus:outline-none"
-                    placeholder="Qty" required />
-                  {docItems.length > 1 && (
-                    <button type="button" onClick={() => removeItem(idx)} className="p-1.5 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-lg">
-                      <X className="w-3.5 h-3.5" />
-                    </button>
-                  )}
+                <div key={idx} className="min-w-0 p-3 border border-slate-200 rounded-xl bg-slate-50/60 space-y-2">
+                  <div className="flex min-w-0 gap-2 items-center">
+                    <select value={di.item_id} onChange={e => updateItem(idx, 'item_id', e.target.value)} required disabled={isOperationalEdit}
+                      className="min-w-0 w-full flex-1 p-2 border border-slate-200 rounded-lg text-xs bg-white focus:ring-2 focus:ring-blue-500 focus:outline-none">
+                      <option value="">Pilih item...</option>
+                      {items.map(it => {
+                        const selectedElsewhere = docItems.some((item, itemIdx) => itemIdx !== idx && item.item_id === String(it.id));
+                        return <option key={it.id} value={it.id} disabled={selectedElsewhere}>{it.name} ({it.code})</option>;
+                      })}
+                    </select>
+                    {!isOperationalEdit && docItems.length > 1 && (
+                      <button type="button" onClick={() => removeItem(idx)} aria-label="Hapus item" className="p-1.5 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-lg">
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                    <label className="min-w-0 flex-1 text-[10px] font-semibold text-slate-600 break-words leading-4">
+                      Jumlah {di.item_id ? items.find(it => String(it.id) === di.item_id)?.name || 'barang' : 'barang'}
+                    </label>
+                    <input type="number" min="1" value={di.expected_qty} onChange={e => updateItem(idx, 'expected_qty', e.target.value)} disabled={isOperationalEdit}
+                      className="w-24 shrink-0 p-2 border border-slate-200 rounded-lg text-xs text-center bg-white focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                      placeholder="Jumlah" required />
+                    <span className="text-[10px] text-slate-400">unit</span>
+                  </div>
                 </div>
               ))}
+            </div>
+            <div className="mt-2 text-[10px] text-slate-500">
+              {docItems.filter(item => item.item_id).length} jenis barang, {docItems.reduce((total, item) => total + (item.item_id ? item.expected_qty : 0), 0)} total unit.
             </div>
           </div>
 
@@ -262,7 +300,7 @@ const CreateDocModal = ({ isOpen, onClose, onCreated, warehouses, items }) => {
 
           <FlameButton type="submit" disabled={loading || uploading}
             fullWidth height={42} flameColor="blue" showArrow={false}
-            text={loading ? 'Membuat...' : 'Buat Dokumen'}
+            text={loading ? 'Menyimpan...' : documentToEdit ? 'Simpan Perubahan' : 'Buat Dokumen'}
           />
         </form>
       </div>
@@ -276,20 +314,46 @@ const AssignTagsModal = ({ isOpen, onClose, document: doc, onAssigned }) => {
   const [selectedItem, setSelectedItem] = useState('');
   const [selectedTags, setSelectedTags] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [loadingTags, setLoadingTags] = useState(false);
+  const [tagLoadError, setTagLoadError] = useState(false);
   const [searchEpc, setSearchEpc] = useState('');
 
   useEffect(() => {
-    if (isOpen && doc) {
-      tagApi.getTags({ status: 'active', per_page: 500 }).then(res => {
-        const tagList = res.data?.data || res.data || [];
-        setAllTags(Array.isArray(tagList) ? tagList : []);
-      }).catch(() => setAllTags([]));
+    const documentItem = (doc?.items || []).find(item => Number(item.id) === Number(selectedItem));
+    if (!isOpen || !doc || !documentItem) {
+      setAllTags([]);
+      setLoadingTags(false);
+      setTagLoadError(false);
+      return undefined;
     }
-  }, [isOpen, doc]);
 
-  // Filter tags by selected item
+    let cancelled = false;
+    setLoadingTags(true);
+    setTagLoadError(false);
+    // OUTBOUND: tag di gudang berstatus 'attached' (sudah stock-in).
+    // INBOUND: tag dari vendor berstatus 'active' (belum ada di gudang mana pun).
+    const tagStatus = doc.type === 'outbound' ? 'attached' : 'active';
+    tagApi.getTags({
+      status: tagStatus,
+      item_id: documentItem.item_id,
+      ...(doc.type === 'outbound' ? { warehouse_id: doc.warehouse_id } : {}),
+    }).then(res => {
+      if (cancelled) return;
+      const tagList = res.data?.data || res.data || [];
+      setAllTags(Array.isArray(tagList) ? tagList : []);
+    }).catch(() => {
+      if (cancelled) return;
+      setAllTags([]);
+      setTagLoadError(true);
+    }).finally(() => {
+      if (!cancelled) setLoadingTags(false);
+    });
+
+    return () => { cancelled = true; };
+  }, [isOpen, doc, selectedItem]);
+
+  // Tag availability is fetched by catalog item_id; selectedItem is a document-item ID.
   const filteredTags = allTags.filter(t => {
-    if (selectedItem && t.item_id !== parseInt(selectedItem)) return false;
     if (searchEpc && !t.epc.toLowerCase().includes(searchEpc.toLowerCase())) return false;
     // Exclude already assigned tags
     const assignedEpcs = (doc?.tags || []).map(dt => dt.tag_epc);
@@ -298,8 +362,47 @@ const AssignTagsModal = ({ isOpen, onClose, document: doc, onAssigned }) => {
   });
 
   const toggleTag = (epc) => {
-    setSelectedTags(prev => prev.includes(epc) ? prev.filter(e => e !== epc) : [...prev, epc]);
+    const documentItem = (doc?.items || []).find(item => Number(item.id) === Number(selectedItem));
+    const alreadyAssigned = (doc?.tags || []).filter(tag => Number(tag.shipping_document_item_id) === Number(selectedItem)).length;
+    const remaining = Math.max(0, Number(documentItem?.expected_qty || 0) - alreadyAssigned);
+    if (selectedTags.includes(epc)) {
+      setSelectedTags(prev => prev.filter(e => e !== epc));
+      return;
+    }
+    if (selectedTags.length >= remaining) {
+      showToast(`Item ini hanya memerlukan ${remaining} tag lagi.`, 'warning');
+      return;
+    }
+    setSelectedTags(prev => [...prev, epc]);
   };
+
+  // Pilih semua tag yang tampil (dibatasi oleh sisa kuota item)
+  const handleSelectAll = () => {
+    const documentItem = (doc?.items || []).find(item => Number(item.id) === Number(selectedItem));
+    const alreadyAssigned = (doc?.tags || []).filter(tag => Number(tag.shipping_document_item_id) === Number(selectedItem)).length;
+    const remaining = Math.max(0, Number(documentItem?.expected_qty || 0) - alreadyAssigned);
+    const allVisible = filteredTags.map(t => t.epc);
+    const allSelected = allVisible.every(epc => selectedTags.includes(epc));
+
+    if (allSelected) {
+      // Batal semua — hapus hanya yang visible
+      setSelectedTags(prev => prev.filter(epc => !allVisible.includes(epc)));
+    } else {
+      // Pilih semua visible, dibatasi kuota tersisa
+      const newEpcs = allVisible.filter(epc => !selectedTags.includes(epc));
+      const canAdd   = remaining - selectedTags.length;
+      if (canAdd <= 0) {
+        showToast(`Kuota item sudah penuh (${remaining} tag).`, 'warning');
+        return;
+      }
+      const toAdd = newEpcs.slice(0, canAdd);
+      if (newEpcs.length > canAdd) {
+        showToast(`Hanya ${canAdd} tag lagi yang bisa dipilih (kuota ${remaining}).`, 'warning');
+      }
+      setSelectedTags(prev => [...prev, ...toAdd]);
+    }
+  };
+
 
   const handleAssign = async () => {
     if (!selectedTags.length || !selectedItem) {
@@ -358,11 +461,43 @@ const AssignTagsModal = ({ isOpen, onClose, document: doc, onAssigned }) => {
               className="w-full pl-8 pr-3 py-2 border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-blue-500 focus:outline-none" />
           </div>
 
+          {/* Tag list header: select-all + counter */}
+          {selectedItem && !loadingTags && filteredTags.length > 0 && (() => {
+            const documentItem = (doc?.items || []).find(item => Number(item.id) === Number(selectedItem));
+            const alreadyAssigned = (doc?.tags || []).filter(tag => Number(tag.shipping_document_item_id) === Number(selectedItem)).length;
+            const remaining = Math.max(0, Number(documentItem?.expected_qty || 0) - alreadyAssigned);
+            const visibleEpcs = filteredTags.map(t => t.epc);
+            const allVisibleSelected = visibleEpcs.length > 0 && visibleEpcs.every(epc => selectedTags.includes(epc));
+            const someSelected = visibleEpcs.some(epc => selectedTags.includes(epc));
+            return (
+              <div className="flex items-center justify-between py-1 px-1">
+                <label className="flex items-center gap-2 cursor-pointer select-none" onClick={handleSelectAll}>
+                  <input
+                    type="checkbox"
+                    readOnly
+                    checked={allVisibleSelected}
+                    ref={el => { if (el) el.indeterminate = someSelected && !allVisibleSelected; }}
+                    className="w-3.5 h-3.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                  />
+                  <span className="text-xs font-semibold text-slate-600">
+                    {allVisibleSelected ? 'Batal Semua' : 'Pilih Semua'}
+                  </span>
+                </label>
+                <span className="text-xs text-slate-400">
+                  <span className={`font-semibold ${selectedTags.length > 0 ? 'text-blue-600' : 'text-slate-500'}`}>{selectedTags.length}</span>
+                  <span className="text-slate-400"> / {remaining} tag dipilih</span>
+                </span>
+              </div>
+            );
+          })()}
+
           {/* Tag list */}
           <div className="space-y-1 max-h-48 overflow-y-auto">
-            {filteredTags.length === 0 ? (
+            {loadingTags ? (
+              <div className="flex items-center justify-center gap-2 py-6 text-xs text-slate-400"><Loader2 className="w-3.5 h-3.5 animate-spin" /> Memuat tag...</div>
+            ) : filteredTags.length === 0 ? (
               <div className="text-center py-6 text-xs text-slate-400">
-                {selectedItem ? 'Tidak ada tag tersedia untuk item ini.' : 'Pilih item terlebih dahulu.'}
+                {tagLoadError ? 'Gagal memuat tag. Coba pilih ulang item.' : selectedItem ? 'Tidak ada tag aktif untuk item ini.' : 'Pilih item terlebih dahulu.'}
               </div>
             ) : (
               filteredTags.map(t => (
@@ -374,10 +509,6 @@ const AssignTagsModal = ({ isOpen, onClose, document: doc, onAssigned }) => {
               ))
             )}
           </div>
-
-          {selectedTags.length > 0 && (
-            <div className="text-xs text-blue-600 font-semibold">{selectedTags.length} tag dipilih</div>
-          )}
         </div>
 
         <div className="p-4 border-t border-slate-100 flex-shrink-0">
@@ -391,45 +522,164 @@ const AssignTagsModal = ({ isOpen, onClose, document: doc, onAssigned }) => {
   );
 };
 
-
 // ─── Document Detail View ───
-const DocumentDetail = ({ docId, onBack, currentUser }) => {
+const DocumentDetail = ({ docId, onBack, currentUser, warehouses, items }) => {
   const [doc, setDoc] = useState(null);
   const [progress, setProgress] = useState(null);
   const [loading, setLoading] = useState(true);
   const [assignModalOpen, setAssignModalOpen] = useState(false);
+  const [editModalOpen, setEditModalOpen] = useState(false);
   const [actionLoading, setActionLoading] = useState('');
+  const fetchInFlightRef = React.useRef(false);
+  const fetchErrorShownRef = React.useRef(false);
+  // Track last known scanned_tags count to detect new gate approvals for toast notification
+  const lastScannedTagsRef = React.useRef(null);
 
   const fetchDoc = useCallback(async () => {
+    if (fetchInFlightRef.current) return;
+    fetchInFlightRef.current = true;
     try {
       const res = await shippingApi.getDocument(docId);
-      setDoc(res.data.document);
+      const freshDoc = res.data.document;
+      // Fix B+F: push notification saat tag baru terbaca oleh gate
+      const freshScanned = freshDoc.scanned_tags ?? 0;
+      if (lastScannedTagsRef.current !== null && freshScanned > lastScannedTagsRef.current) {
+        const delta = freshScanned - lastScannedTagsRef.current;
+        showToast(`✅ Gate menyetujui ${delta} tag baru — progress: ${freshScanned}/${freshDoc.total_tags}`, 'success');
+      }
+      lastScannedTagsRef.current = freshScanned;
+      setDoc(freshDoc);
       setProgress(res.data.progress);
+      fetchErrorShownRef.current = false;
     } catch (err) {
-      showToast('Gagal memuat dokumen.', 'error');
+      if (!fetchErrorShownRef.current) {
+        showToast('Gagal memuat dokumen.', 'error');
+        fetchErrorShownRef.current = true;
+      }
     } finally {
+      fetchInFlightRef.current = false;
       setLoading(false);
     }
   }, [docId]);
 
   useEffect(() => { fetchDoc(); }, [fetchDoc]);
 
-  // Auto-refresh every 5s when in_progress
+  // Fix B: Ganti polling 1s dengan SSE /gate/stream untuk dokumen in_progress.
+  // SSE jauh lebih efisien — koneksi long-poll tunggal daripada 1 request/detik.
+  // Saat SSE menerima event gate yang cocok dengan dokumen ini, trigger fetchDoc()
+  // untuk memperbarui progress. Fallback ke polling 3.5s jika SSE tidak tersedia.
+  // Fix C: Aktifkan SSE juga untuk status 'approved' — gate scan pertama mengubah
+  // status dari approved → in_progress; tanpa SSE, perubahan ini tidak terdeteksi UI.
   useEffect(() => {
-    if (doc?.status !== 'in_progress') return;
-    const interval = setInterval(fetchDoc, 5000);
-    return () => clearInterval(interval);
-  }, [doc?.status, fetchDoc]);
+    if (!['draft', 'approved', 'in_progress'].includes(doc?.status)) return;
+
+    let isDisposed = false;
+    let sseController = null;
+    let sseConnecting = false;
+    let pollTimer = null;
+    let sseReconnectTimer = null;
+
+    const getApiBase = () => {
+      if (typeof window === 'undefined') return '/api';
+      if (window.location.port !== '5173') return '/api';
+      return `http://${window.location.hostname}:8000/api`;
+    };
+
+    const startSse = async () => {
+      if (isDisposed || sseConnecting) return;
+      sseConnecting = true;
+      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+
+      sseController = new AbortController();
+      try {
+        const endpoint = new URL(`${getApiBase().replace(/\/$/, '')}/gate/stream`, window.location.origin);
+        const token = localStorage.getItem('mosa_token');
+        const response = await fetch(endpoint.toString(), {
+          headers: { Accept: 'text/event-stream', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+          signal: sseController.signal,
+        });
+        if (!response.ok || !response.body) throw new Error(`SSE ${response.status}`);
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        while (!isDisposed) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
+          const frames = buffer.split('\n\n');
+          buffer = frames.pop() || '';
+          for (const frame of frames) {
+            const dataLines = [];
+            frame.split('\n').forEach((line) => {
+              if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
+            });
+            if (!dataLines.length) continue;
+            try {
+              const payload = JSON.parse(dataLines.join(''));
+              const events = Array.isArray(payload) ? payload : [payload];
+              // Cek apakah ada event gate yang cocok dengan dokumen ini
+              // Gunakan == (loose) untuk handle integer vs string comparison
+              const relevant = events.some(
+                // eslint-disable-next-line eqeqeq
+                (e) => e.shipping_document_id == docId
+              );
+              if (relevant) fetchDoc();
+            } catch (_) { /* skip invalid frames */ }
+          }
+        }
+      } catch (err) {
+        if (!isDisposed && err.name !== 'AbortError') {
+          // Fallback ke polling jika SSE gagal (e.g., proxy tidak support streaming)
+          if (!pollTimer) {
+            pollTimer = setInterval(() => {
+              if (!isDisposed) fetchDoc();
+            }, 3500);
+          }
+          // Coba reconnect SSE setelah 5 detik
+          sseReconnectTimer = setTimeout(() => {
+            sseConnecting = false;
+            if (!isDisposed) startSse();
+          }, 5000);
+          return;
+        }
+      }
+      sseConnecting = false;
+      if (!isDisposed) {
+        // SSE stream ditutup server (55s window) — reconnect segera
+        sseReconnectTimer = setTimeout(() => {
+          if (!isDisposed) startSse();
+        }, 250);
+      }
+    };
+
+    startSse();
+
+    return () => {
+      isDisposed = true;
+      if (sseController) sseController.abort();
+      if (pollTimer) clearInterval(pollTimer);
+      if (sseReconnectTimer) clearTimeout(sseReconnectTimer);
+    };
+  }, [doc?.status, docId, fetchDoc]);
 
   const handleApprove = async () => {
-    const ok = await showConfirm({ title: 'Approve Dokumen', message: 'Yakin approve dokumen ini? Setelah approve, PIC Lapangan bisa mulai assign tag.', confirmText: 'Approve' });
+    const ok = await showConfirm({
+      title: 'ACC & Selesaikan Dokumen',
+      message: `Approve dan selesaikan dokumen ini? Semua tag yang telah terbaca oleh gate akan dikonfirmasi. Status akan menjadi "Selesai" dan tidak dapat diubah kembali.`,
+      confirmText: 'ACC & Selesaikan',
+    });
     if (!ok) return;
     setActionLoading('approve');
+    // Optimistic UI
+    const prevDoc = doc;
+    setDoc(d => ({ ...d, status: 'completed' }));
     try {
       await shippingApi.approveDocument(doc.id);
-      showToast('Dokumen berhasil di-approve!', 'success');
-      fetchDoc();
+      showToast('Dokumen berhasil di-approve dan diselesaikan!', 'success');
+      fetchDoc(); // sync actual server state
     } catch (err) {
+      setDoc(prevDoc); // rollback
       showToast(err.response?.data?.message || 'Gagal approve.', 'error');
     } finally {
       setActionLoading('');
@@ -440,12 +690,51 @@ const DocumentDetail = ({ docId, onBack, currentUser }) => {
     const ok = await showConfirm({ title: 'Selesaikan Dokumen', message: 'Semua tag sudah cocok. ACC dokumen ini?', confirmText: 'ACC & Selesaikan' });
     if (!ok) return;
     setActionLoading('complete');
+    // Percepatan #6: Optimistic UI — tampilkan completed sebelum server confirm
+    const prevDoc = doc;
+    setDoc(d => ({ ...d, status: 'completed' }));
     try {
       await shippingApi.completeDocument(doc.id);
       showToast('Dokumen selesai! Semua tag cocok ✓', 'success');
       fetchDoc();
     } catch (err) {
+      setDoc(prevDoc); // rollback
       showToast(err.response?.data?.message || 'Gagal menyelesaikan.', 'error');
+    } finally {
+      setActionLoading('');
+    }
+  };
+
+  const openStockReconciliation = async () => {
+    setActionLoading('reconcile-preview');
+    try {
+      const res = await shippingApi.previewStockReconciliation(doc.id);
+      const preview = res.data;
+      if (!(preview.gate_evidence_valid || preview.legacy_reconciliation_available) || !preview.eligible_count) {
+        showToast(preview.blocked_reason || 'Belum ada tag yang memenuhi syarat untuk dicatat sebagai stok.', 'error');
+        return;
+      }
+
+      const legacyWarning = preview.gate_evidence_valid
+        ? ''
+        : ' Riwayat gate lama tidak membuktikan seluruh EPC dalam satu lintasan valid; tindakan akan tercatat sebagai attestasi PM/Superadmin, bukan persetujuan gate.';
+      const ok = await showConfirm({
+        title: 'Catat Stok Masuk',
+        message: `Catat ${preview.eligible_count} tag pada ${doc.document_number} sebagai stok di ${doc.warehouse?.name || 'gudang tujuan'}? Pastikan barang dan EPC benar-benar sudah diperiksa fisik.${legacyWarning}`,
+        confirmText: `Catat ${preview.eligible_count} ke Stok`,
+      });
+      if (!ok) return;
+
+      setActionLoading('stock-in');
+      const evidenceReference = `UI_PHYSICAL_CONFIRMATION:${doc.document_number}:${currentUser?.id || 'user'}:${new Date().toISOString()}`;
+      const result = await shippingApi.reconcileInboundStock(doc.id, {
+        evidence_reference: evidenceReference,
+        physical_confirmation: true,
+      });
+      showToast(result.data.message, result.data.reconciled_count ? 'success' : 'info');
+      fetchDoc();
+    } catch (err) {
+      showToast(err.response?.data?.message || 'Gagal mencatat stok masuk.', 'error');
     } finally {
       setActionLoading('');
     }
@@ -466,6 +755,21 @@ const DocumentDetail = ({ docId, onBack, currentUser }) => {
     }
   };
 
+  const handleArchiveDocument = async () => {
+    const ok = await showConfirm({ title: 'Hapus / Arsipkan Dokumen', message: 'Dokumen akan disembunyikan dari daftar aktif, tetapi record, tag, dan bukti gate/custody tetap disimpan untuk audit. Dokumen aktif yang sudah memiliki pembacaan gate tidak dapat diarsipkan.', confirmText: 'Hapus dari Daftar', type: 'danger' });
+    if (!ok) return;
+    setActionLoading('archive');
+    try {
+      await shippingApi.deleteDocument(doc.id);
+      showToast('Dokumen diarsipkan; bukti operasional tetap tersimpan.', 'success');
+      onBack();
+    } catch (err) {
+      showToast(err.response?.data?.message || 'Dokumen tidak dapat diarsipkan.', 'error');
+    } finally {
+      setActionLoading('');
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-20">
@@ -480,10 +784,12 @@ const DocumentDetail = ({ docId, onBack, currentUser }) => {
     );
   }
 
-  const canApprove = ['pm', 'superadmin'].includes(currentUser?.role) && doc.status === 'draft';
-  const canAssignTags = ['pic_lapangan', 'pm', 'superadmin'].includes(currentUser?.role) && ['approved', 'in_progress'].includes(doc.status);
-  const canComplete = ['pic_lapangan', 'superadmin'].includes(currentUser?.role) && doc.status === 'in_progress' && progress?.is_complete;
+  const canApprove = ['pm', 'superadmin'].includes(currentUser?.role) && doc.status === 'in_progress' && !doc.archived_at;
+  const canEditDocument = ['pm', 'superadmin'].includes(currentUser?.role) && !doc.archived_at;
+  const canArchiveDocument = currentUser?.role === 'superadmin' && !doc.archived_at;
+  const canAssignTags = ['pic_lapangan', 'pm', 'superadmin'].includes(currentUser?.role) && ['draft', 'approved', 'in_progress'].includes(doc.status);
   const canCancel = ['pm', 'superadmin'].includes(currentUser?.role) && doc.status !== 'completed';
+  const canReconcileInbound = ['pm', 'superadmin'].includes(currentUser?.role) && doc.type === 'inbound' && doc.status === 'completed';
 
   return (
     <div className="space-y-4">
@@ -495,7 +801,7 @@ const DocumentDetail = ({ docId, onBack, currentUser }) => {
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <h2 className="text-base font-bold text-slate-800 truncate">{doc.document_number}</h2>
-            <StatusBadge status={doc.status} />
+            {doc.archived_at ? <span className="inline-flex rounded-md border border-slate-200 bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-600">Diarsipkan</span> : <StatusBadge status={doc.status} />}
             <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold border ${doc.type === 'inbound' ? 'bg-blue-50 text-blue-700 border-blue-200' : 'bg-blue-50 text-blue-700 border-blue-200'}`}>
               {doc.type === 'inbound' ? <ArrowDownCircle className="w-3 h-3" /> : <ArrowUpCircle className="w-3 h-3" />}
               {doc.type === 'inbound' ? 'Masuk' : 'Keluar'}
@@ -512,7 +818,7 @@ const DocumentDetail = ({ docId, onBack, currentUser }) => {
       </div>
 
       {/* Progress Card */}
-      {progress && doc.status !== 'draft' && (
+      {progress && (
         <div className={`p-4 rounded-xl border-2 ${progress.is_complete ? 'bg-blue-50 border-blue-300' : 'bg-white border-slate-200'}`}>
           <div className="flex items-center justify-between mb-2">
             <div className="flex items-center gap-2">
@@ -541,10 +847,20 @@ const DocumentDetail = ({ docId, onBack, currentUser }) => {
 
       {/* Action Buttons */}
       <div className="flex flex-wrap gap-2">
+        {canEditDocument && (
+          <FlameButton onClick={() => setEditModalOpen(true)} height={36} flameColor="blue" showArrow={false} text="">
+            <Pencil className="w-3.5 h-3.5" /> {doc.status === 'draft' ? 'Edit Dokumen' : 'Edit Catatan/Lampiran'}
+          </FlameButton>
+        )}
+        {canArchiveDocument && (
+          <FlameButton onClick={handleArchiveDocument} disabled={actionLoading === 'archive'} height={36} flameColor="rose" showArrow={false} text="">
+            <Trash2 className="w-3.5 h-3.5" /> {actionLoading === 'archive' ? 'Mengarsipkan...' : 'Hapus / Arsipkan'}
+          </FlameButton>
+        )}
         {canApprove && (
           <FlameButton onClick={handleApprove} disabled={actionLoading === 'approve'}
-            height={36} flameColor="blue" showArrow={false} text="">
-            <Check className="w-3.5 h-3.5" /> {actionLoading === 'approve' ? 'Meng-approve...' : 'Approve Dokumen'}
+            height={36} flameColor="green" showArrow={false} text="">
+            <Check className="w-3.5 h-3.5" /> {actionLoading === 'approve' ? 'Memproses...' : 'ACC — Selesaikan'}
           </FlameButton>
         )}
         {canAssignTags && (
@@ -553,10 +869,10 @@ const DocumentDetail = ({ docId, onBack, currentUser }) => {
             <Tag className="w-3.5 h-3.5" /> Assign Tag RFID
           </FlameButton>
         )}
-        {canComplete && (
-          <FlameButton onClick={handleComplete} disabled={actionLoading === 'complete'}
-            height={36} flameColor="green" showArrow={false} text="">
-            <CheckCircle className="w-3.5 h-3.5" /> {actionLoading === 'complete' ? 'Menyelesaikan...' : 'ACC — Selesaikan'}
+        {canReconcileInbound && (
+          <FlameButton onClick={openStockReconciliation} disabled={actionLoading === 'reconcile-preview' || actionLoading === 'stock-in'}
+            height={36} flameColor="blue" showArrow={false} text="">
+            <ShieldCheck className="w-3.5 h-3.5" /> {actionLoading === 'reconcile-preview' ? 'Memeriksa...' : actionLoading === 'stock-in' ? 'Mencatat...' : 'Catat Stok Masuk'}
           </FlameButton>
         )}
         {canCancel && doc.status !== 'cancelled' && (
@@ -566,6 +882,11 @@ const DocumentDetail = ({ docId, onBack, currentUser }) => {
           </FlameButton>
         )}
       </div>
+      {currentUser?.role === 'superadmin' && doc.status !== 'draft' && (
+        <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] text-slate-600">
+          Untuk menjaga audit, data fisik dokumen non-draft (jenis, gudang, item, kuantitas, EPC) terkunci; hanya catatan/lampiran dapat diedit. Hapus mengarsipkan record, bukan menghapus bukti. Dokumen aktif yang sudah dibaca gate tidak dapat diarsipkan.
+        </div>
+      )}
 
       {/* Items Table */}
       <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-xs">
@@ -677,6 +998,14 @@ const DocumentDetail = ({ docId, onBack, currentUser }) => {
         document={doc}
         onAssigned={() => { setAssignModalOpen(false); fetchDoc(); }}
       />
+      <CreateDocModal
+        isOpen={editModalOpen}
+        onClose={() => setEditModalOpen(false)}
+        onCreated={() => { setEditModalOpen(false); fetchDoc(); }}
+        warehouses={warehouses || []}
+        items={items || []}
+        documentToEdit={doc}
+      />
     </div>
   );
 };
@@ -688,12 +1017,20 @@ export default function ShippingDocuments({ currentUser }) {
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState('');
   const [typeFilter, setTypeFilter] = useState('');
+  const [archivedFilter, setArchivedFilter] = useState(false);
+  // Percepatan: pisah searchQuery (input) dari debouncedSearch (API trigger)
   const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [createModalOpen, setCreateModalOpen] = useState(false);
+  const [documentToEdit, setDocumentToEdit] = useState(null);
   const [selectedDocId, setSelectedDocId] = useState(null);
   const [warehouses, setWarehouses] = useState([]);
   const [items, setItems] = useState([]);
   const [pagination, setPagination] = useState({ current_page: 1, last_page: 1 });
+  // ── Rekomendasi #3: Kanban Board View toggle ──────────────────────
+  const [viewMode, setViewMode] = useState('list'); // 'list' | 'board'
+  // Percepatan #5: useTransition — filter non-urgent, UI tetap responsif
+  const [isPending, startTransition] = useTransition();
 
   const fetchDocs = useCallback(async (page = 1) => {
     setLoading(true);
@@ -701,7 +1038,8 @@ export default function ShippingDocuments({ currentUser }) {
       const params = { page, per_page: 15 };
       if (statusFilter) params.status = statusFilter;
       if (typeFilter) params.type = typeFilter;
-      if (searchQuery) params.search = searchQuery;
+      if (debouncedSearch) params.search = debouncedSearch;
+      if (archivedFilter && currentUser?.role === 'superadmin') params.archived = 1;
 
       const res = await shippingApi.getDocuments(params);
       setDocs(res.data.data || []);
@@ -711,7 +1049,13 @@ export default function ShippingDocuments({ currentUser }) {
     } finally {
       setLoading(false);
     }
-  }, [statusFilter, typeFilter, searchQuery]);
+  }, [statusFilter, typeFilter, debouncedSearch, archivedFilter, currentUser?.role]);
+
+  // Debounce search input 400ms — hanya trigger API setelah user berhenti mengetik
+  useEffect(() => {
+    const timer = setTimeout(() => startTransition(() => setDebouncedSearch(searchQuery)), 400);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
 
   useEffect(() => { fetchDocs(); }, [fetchDocs]);
 
@@ -727,11 +1071,37 @@ export default function ShippingDocuments({ currentUser }) {
         docId={selectedDocId}
         onBack={() => { setSelectedDocId(null); fetchDocs(); }}
         currentUser={currentUser}
+        warehouses={warehouses}
+        items={items}
       />
     );
   }
 
   const canCreate = ['pm', 'superadmin'].includes(currentUser?.role);
+  const canEditDocuments = ['pm', 'superadmin'].includes(currentUser?.role);
+  const canArchiveDocuments = currentUser?.role === 'superadmin';
+  const handleEditFromList = async (event, doc) => {
+    event.stopPropagation();
+    try {
+      const res = await shippingApi.getDocument(doc.id);
+      setDocumentToEdit(res.data.document);
+      setCreateModalOpen(true);
+    } catch (err) {
+      showToast(err.response?.data?.message || 'Gagal memuat dokumen untuk edit.', 'error');
+    }
+  };
+  const handleArchiveFromList = async (event, doc) => {
+    event.stopPropagation();
+    const ok = await showConfirm({ title: 'Hapus / Arsipkan Dokumen', message: `${doc.document_number} akan disembunyikan dari daftar aktif, tetapi seluruh tag dan bukti audit tetap tersimpan. Jika dokumen aktif sudah dibaca gate, arsip akan ditolak.`, confirmText: 'Hapus dari Daftar', type: 'danger' });
+    if (!ok) return;
+    try {
+      await shippingApi.deleteDocument(doc.id);
+      showToast('Dokumen diarsipkan; bukti operasional tetap tersimpan.', 'success');
+      fetchDocs(pagination.current_page);
+    } catch (err) {
+      showToast(err.response?.data?.message || 'Dokumen tidak dapat diarsipkan.', 'error');
+    }
+  };
   const statusTabs = [
     { value: '', label: 'Semua', icon: null },
     { value: 'draft', label: 'Draft', icon: Clock },
@@ -797,13 +1167,40 @@ export default function ShippingDocuments({ currentUser }) {
           <input value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Cari no. dokumen..."
             className="w-full pl-8 pr-3 py-1.5 border border-slate-200 rounded-xl text-xs bg-white focus:ring-2 focus:ring-blue-500 focus:outline-none shadow-xs" />
         </div>
+
+        {/* ── Rekomendasi #3: View Mode Toggle ─────────────────────────── */}
+        <div className="flex rounded-xl border border-slate-200 bg-white overflow-hidden shadow-xs">
+          <button
+            onClick={() => setViewMode('list')}
+            title="Tampilan List"
+            className={`px-2.5 py-1.5 transition flex items-center gap-1 text-xs font-semibold ${
+              viewMode === 'list' ? 'bg-slate-800 text-white' : 'text-slate-500 hover:bg-slate-50'
+            }`}
+          >
+            <List className="w-3.5 h-3.5" />
+          </button>
+          <button
+            onClick={() => setViewMode('board')}
+            title="Tampilan Kanban"
+            className={`px-2.5 py-1.5 transition flex items-center gap-1 text-xs font-semibold border-l border-slate-200 ${
+              viewMode === 'board' ? 'bg-slate-800 text-white' : 'text-slate-500 hover:bg-slate-50'
+            }`}
+          >
+            <LayoutGrid className="w-3.5 h-3.5" />
+          </button>
+        </div>
       </div>
 
-      {/* Documents List */}
+      {currentUser?.role === 'superadmin' && (
+        <button onClick={() => { setArchivedFilter(value => !value); setStatusFilter(''); setTypeFilter(''); }}
+          className={`px-3 py-1.5 text-[11px] font-semibold rounded-xl border transition ${archivedFilter ? 'bg-slate-800 text-white border-slate-800' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}>
+          {archivedFilter ? 'Kembali ke Aktif' : 'Lihat Arsip'}
+        </button>
+      )}
+
+      {/* Documents List / Board */}
       {loading ? (
-        <div className="flex items-center justify-center py-16">
-          <Loader2 className="w-6 h-6 text-blue-500 animate-spin" />
-        </div>
+        <SkeletonTable rows={6} cols={4} />
       ) : docs.length === 0 ? (
         <div className="text-center py-16 bg-white rounded-2xl border border-slate-200 shadow-xs">
           <FileText className="w-10 h-10 text-slate-300 mx-auto mb-3" />
@@ -812,11 +1209,100 @@ export default function ShippingDocuments({ currentUser }) {
             {canCreate ? 'Klik "Buat Dokumen" untuk memulai.' : 'Dokumen dari PM akan muncul di sini.'}
           </div>
         </div>
+      ) : viewMode === 'board' ? (
+        // ── Rekomendasi #3: Kanban Board View ──────────────────────────
+        <div className="overflow-x-auto pb-2">
+          <div className="flex gap-3 min-w-max">
+            {[
+              { status: 'draft',       label: 'Draft',         color: 'bg-slate-100 border-slate-300',   badge: 'bg-slate-200 text-slate-700', dot: 'bg-slate-400' },
+              { status: 'approved',    label: 'Disetujui',     color: 'bg-blue-50 border-blue-200',      badge: 'bg-blue-100 text-blue-700',   dot: 'bg-blue-500' },
+              { status: 'in_progress', label: 'Sedang Proses', color: 'bg-amber-50 border-amber-200',    badge: 'bg-amber-100 text-amber-700', dot: 'bg-amber-500 animate-pulse' },
+              { status: 'completed',   label: 'Selesai',       color: 'bg-emerald-50 border-emerald-200',badge: 'bg-emerald-100 text-emerald-700', dot: 'bg-emerald-500' },
+            ].map(col => {
+              const colDocs = docs.filter(d => d.status === col.status);
+              return (
+                <div key={col.status} className={`w-72 flex-shrink-0 rounded-2xl border ${col.color} flex flex-col`}>
+                  {/* Column header */}
+                  <div className="px-3 py-2.5 flex items-center justify-between border-b border-current border-opacity-20">
+                    <div className="flex items-center gap-2">
+                      <span className={`w-2 h-2 rounded-full ${col.dot}`} />
+                      <span className="text-xs font-bold text-slate-700">{col.label}</span>
+                    </div>
+                    <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${col.badge}`}>
+                      {colDocs.length}
+                    </span>
+                  </div>
+                  {/* Cards */}
+                  <div className="flex-1 p-2 space-y-2 max-h-[65vh] overflow-y-auto">
+                    {colDocs.length === 0 && (
+                      <div className="py-6 text-center text-[11px] text-slate-400">Tidak ada dokumen</div>
+                    )}
+                    {colDocs.map(doc => (
+                      <button
+                        key={doc.id}
+                        onClick={() => setSelectedDocId(doc.id)}
+                        className="w-full text-left bg-white rounded-xl border border-slate-200 p-3 shadow-xs hover:shadow-md hover:border-blue-300 transition-all cursor-pointer group"
+                      >
+                        {/* Doc type indicator */}
+                        <div className="flex items-start justify-between gap-2 mb-2">
+                          <div className="flex items-center gap-1.5">
+                            <span className={`w-6 h-6 rounded-lg flex items-center justify-center flex-shrink-0 ${
+                              doc.type === 'inbound' ? 'bg-blue-100 text-blue-600' : 'bg-amber-100 text-amber-600'
+                            }`}>
+                              {doc.type === 'inbound'
+                                ? <ArrowDownCircle className="w-3.5 h-3.5" />
+                                : <ArrowUpCircle className="w-3.5 h-3.5" />}
+                            </span>
+                            <span className="text-[10px] font-bold text-slate-500 uppercase">
+                              {doc.type === 'inbound' ? 'Masuk' : 'Keluar'}
+                            </span>
+                          </div>
+                          <Eye className="w-3.5 h-3.5 text-slate-300 group-hover:text-blue-500 transition flex-shrink-0" />
+                        </div>
+                        {/* Doc number */}
+                        <div className="text-xs font-black text-slate-800 group-hover:text-blue-700 transition leading-tight mb-1">
+                          {doc.document_number}
+                        </div>
+                        {/* Meta */}
+                        <div className="text-[10px] text-slate-400 truncate mb-2">
+                          {doc.creator?.name} • {doc.warehouse?.name}
+                        </div>
+                        {/* Progress bar */}
+                        {doc.total_tags > 0 && (
+                          <div className="space-y-1">
+                            <div className="flex justify-between text-[9px] font-mono text-slate-400">
+                              <span>{doc.scanned_tags || 0}/{doc.total_tags} tag</span>
+                              <span>{doc.total_tags > 0 ? Math.round(((doc.scanned_tags || 0) / doc.total_tags) * 100) : 0}%</span>
+                            </div>
+                            <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                              <div
+                                className={`h-full rounded-full transition-all duration-500 ${
+                                  (doc.scanned_tags || 0) >= doc.total_tags ? 'bg-emerald-500' : 'bg-amber-400'
+                                }`}
+                                style={{ width: `${doc.total_tags > 0 ? Math.round(((doc.scanned_tags || 0) / doc.total_tags) * 100) : 0}%` }}
+                              />
+                            </div>
+                          </div>
+                        )}
+                        {/* Items count */}
+                        <div className="mt-2 text-[10px] text-slate-400">
+                          {doc.items_count || 0} jenis material
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
       ) : (
+        // ── List View (default) ──────────────────────────────────────
         <div className="space-y-2">
           {docs.map(doc => (
-            <button key={doc.id} onClick={() => setSelectedDocId(doc.id)}
-              className="w-full bg-white rounded-xl border border-slate-200 p-4 text-left hover:border-blue-300 hover:shadow-md transition group cursor-pointer">
+            <div key={doc.id}
+              className="w-full bg-white rounded-xl border border-slate-200 p-3 flex items-center gap-2 hover:border-blue-300 hover:shadow-md transition group">
+              <button onClick={() => setSelectedDocId(doc.id)} className="min-w-0 flex-1 p-1 text-left cursor-pointer">
               <div className="flex items-center justify-between gap-3">
                 <div className="flex items-center gap-3 min-w-0 flex-1">
                   <div className={`w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0 ${doc.type === 'inbound' ? 'bg-blue-100 text-blue-600' : 'bg-blue-100 text-blue-600'}`}>
@@ -825,7 +1311,7 @@ export default function ShippingDocuments({ currentUser }) {
                   <div className="min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="text-xs font-bold text-slate-800 group-hover:text-blue-700 transition">{doc.document_number}</span>
-                      <StatusBadge status={doc.status} />
+                      {doc.archived_at ? <span className="inline-flex rounded-md border border-slate-200 bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-600">Diarsipkan</span> : <StatusBadge status={doc.status} />}
                     </div>
                     <div className="text-[10px] text-slate-500 mt-0.5 truncate">
                       {doc.creator?.name} • {doc.warehouse?.name} • {doc.items_count || 0} item
@@ -846,7 +1332,20 @@ export default function ShippingDocuments({ currentUser }) {
                   <Eye className="w-4 h-4 text-slate-300 group-hover:text-blue-500 transition" />
                 </div>
               </div>
-            </button>
+              </button>
+              {canEditDocuments && !doc.archived_at && (
+                <div className="flex items-center gap-1 shrink-0">
+                  <button onClick={event => handleEditFromList(event, doc)} title={doc.status === 'draft' ? 'Edit draft' : 'Edit catatan/lampiran'} aria-label={`Edit dokumen ${doc.document_number}`} className="p-2 rounded-lg text-blue-600 hover:bg-blue-50">
+                    <Pencil className="w-4 h-4" />
+                  </button>
+                  {canArchiveDocuments && !doc.archived_at && (
+                    <button onClick={event => handleArchiveFromList(event, doc)} title="Hapus/arsipkan (audit dipertahankan)" aria-label={`Hapus atau arsipkan ${doc.document_number}`} className="p-2 rounded-lg text-rose-600 hover:bg-rose-50">
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
           ))}
 
           {/* Pagination */}
@@ -866,10 +1365,11 @@ export default function ShippingDocuments({ currentUser }) {
       {/* Create Modal */}
       <CreateDocModal
         isOpen={createModalOpen}
-        onClose={() => setCreateModalOpen(false)}
-        onCreated={() => fetchDocs()}
+        onClose={() => { setCreateModalOpen(false); setDocumentToEdit(null); }}
+        onCreated={() => { fetchDocs(); setDocumentToEdit(null); }}
         warehouses={warehouses}
         items={items}
+        documentToEdit={documentToEdit}
       />
     </div>
   );

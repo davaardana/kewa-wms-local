@@ -18,6 +18,7 @@ Indeks dokumentasi sistem. Status mengikuti implementasi aktual kode, bukan targ
 | Dokumen | Isi |
 |:--------|:----|
 | [`arsitektur.md`](arsitektur.md) | Komponen, topologi, trust boundary |
+| [`rfid-flow.md`](rfid-flow.md) | Alur lengkap RFID: reader → edge → VPS → browser, SSE, WS, enrollment, gate |
 | [`schema.md`](schema.md) | Skema database & ERD |
 | [`api-spec.md`](api-spec.md) | Kontrak REST API lengkap |
 | [`rules.md`](rules.md) | Aturan bisnis dengan label enforcement |

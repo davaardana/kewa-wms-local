@@ -18,24 +18,33 @@ PM approve dokumen → status: approved
 PIC assign tag RFID ke setiap item dokumen
        │
        ▼
+Tag inbound harus active tanpa gudang; jumlah assignment
+harus tepat sama dengan expected_qty per item
+       │
+       ▼
 Sopir/truk tiba di gate gudang
        │
        ▼
 Reader UHF baca tag → Edge Bridge kirim ke backend
        │
        ▼
-Backend validasi: tag sesuai dokumen? arah benar?
+Backend validasi: EPC assigned, item, qty, gudang,
+dan arah IN sesuai?
        │
-   ┌───┴───┐
-  YA      TIDAK
-   │        │
-   ▼        ▼
-GATE_IN  Notifikasi
-logged   anomali
-   │
-   ▼
-PIC selesaikan dokumen → status: selesai
-STOCK_IN dicatat di ledger
+Mismatch/arah/gudang salah → DENIED, notifikasi;
+progress dan custody tidak berubah
+       │
+       ▼
+Muatan parsial valid → STANDBY; EPC diakumulasi,
+belum ada progress/custody
+       │
+       ▼
+Set EPC lengkap valid → gate menerima, GATE_IN dicatat,
+progress dokumen menjadi 100%
+       │
+       ▼
+PIC menyelesaikan → STOCK_IN dicatat; tag menjadi active
+di gudang tujuan; status COMPLETED
 ```
 
 ---
@@ -50,6 +59,7 @@ PM approve dokumen → status: approved
        │
        ▼
 PIC/Storeroom assign tag ke item
+Tag harus active di gudang asal; assignment tepat expected_qty
        │
        ▼
 Barang dimuat ke kendaraan
@@ -58,17 +68,20 @@ Barang dimuat ke kendaraan
 Kendaraan lewat gate → Reader baca tag
        │
        ▼
-Backend: tag cocok dengan dokumen outbound?
+Backend: EPC assigned, item, qty, gudang, arah OUT cocok?
        │
-   ┌───┴───┐
-  YA      TIDAK
-   │        │
-   ▼        ▼
-GATE_OUT  Alert,
-logged    gate terkunci
-   │
-   ▼
-Otomatis selesai jika semua tag terverifikasi
+Mismatch/arah/gudang salah → DENIED; progress dan stok tetap
+       │
+       ▼
+Muatan parsial valid → STANDBY; EPC diakumulasi,
+belum ada progress/custody
+       │
+       ▼
+Set EPC lengkap valid → GATE_OUT, stok gudang berkurang,
+progress dokumen menjadi 100%
+       │
+       ▼
+PIC menyelesaikan dokumen → status COMPLETED
 ```
 
 ---

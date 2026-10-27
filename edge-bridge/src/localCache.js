@@ -16,6 +16,10 @@ class LocalCache {
     this.deadLetters = this._loadFile(this.deadLetterFile);
     this.incidents = this._loadFile(this.incidentFile);
     this._pendingWriteTimers = new Map(); // file -> timer for debounced writes (#7)
+
+    // #2 Optimistic: in-memory cache authorized document EPC set for local pre-evaluation
+    // Structure: { docId, type, epcSet: Set<string>, cachedAt }
+    this._authorizedDocCache = null;
   }
 
   _loadFile(file) {
@@ -128,6 +132,66 @@ class LocalCache {
   clear() {
     this.buffer = [];
     this._atomicSave(this.bufferFile, this.buffer);
+  }
+
+  // ── #2 Optimistic Decision Cache ──────────────────────────────────────────
+
+  /**
+   * Cache authorized document data for local pre-evaluation.
+   * Called when syncGateConfig fetches a valid authorized_document.
+   * @param {{ id: number, type: string, epc_list: string[] }|null} doc
+   */
+  setAuthorizedDoc(doc) {
+    if (!doc) {
+      this._authorizedDocCache = null;
+      return;
+    }
+    this._authorizedDocCache = {
+      docId:    doc.id,
+      type:     doc.type,           // 'inbound' | 'outbound'
+      epcSet:   new Set((doc.epc_list || []).map((e) => String(e).toUpperCase())),
+      cachedAt: Date.now(),
+    };
+  }
+
+  /**
+   * Evaluate whether detected EPCs match the locally-cached authorized document.
+   * Returns null if no cache available (fallback to VPS decision).
+   *
+   * @param {string[]} detectedEpcs - EPCs from gate batch
+   * @returns {{ unlock: boolean, mismatch: boolean, reason: string }|null}
+   */
+  evaluateOptimistic(detectedEpcs) {
+    const cache = this._authorizedDocCache;
+    if (!cache || cache.epcSet.size === 0) return null;
+
+    // Invalidate after 5 minutes (doc may have changed)
+    if (Date.now() - cache.cachedAt > 300000) {
+      this._authorizedDocCache = null;
+      return null;
+    }
+
+    const detected = detectedEpcs.map((e) => String(e).toUpperCase());
+    const inDoc    = detected.filter((epc) => cache.epcSet.has(epc));
+    const notInDoc = detected.filter((epc) => !cache.epcSet.has(epc));
+
+    const allMatch  = notInDoc.length === 0 && inDoc.length > 0;
+    const mismatch  = notInDoc.length > 0;
+
+    return {
+      unlock:   allMatch,
+      mismatch,
+      reason:   mismatch
+        ? `LOCAL_EVAL: ${notInDoc.length} EPC not in doc (${notInDoc.slice(0, 3).join(', ')}${notInDoc.length > 3 ? '...' : ''})`
+        : 'LOCAL_EVAL: All EPCs matched',
+      source:   'local_cache',
+      doc_id:   cache.docId,
+    };
+  }
+
+  /** Clear local optimistic cache (e.g., when doc is cancelled or completed). */
+  clearAuthorizedDoc() {
+    this._authorizedDocCache = null;
   }
 }
 

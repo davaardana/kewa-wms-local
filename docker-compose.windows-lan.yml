@@ -1,0 +1,22 @@
+# =============================================================================
+# MOSA WMS — Docker Compose Override: Windows LAN Dev
+# Buka port ke seluruh LAN sehingga iOS/Android/PC lain bisa akses
+# Gunakan: docker compose -f docker-compose.yml -f docker-compose.windows-lan.yml up -d --build
+# =============================================================================
+services:
+  nginx:
+    ports:
+      - "0.0.0.0:80:80"
+  edge-bridge:
+    ports:
+      - "0.0.0.0:2077:2077"
+      - "0.0.0.0:2078:2078"
+      - "0.0.0.0:2079:2079"
+  postgres:
+    ports:
+      - "127.0.0.1:5433:5432"
+  backend:
+    environment:
+      ALLOW_HYBRID_DEVICE: "true"
+  cloudflared:
+    profiles: [tunnel]

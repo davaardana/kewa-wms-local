@@ -1,36 +1,22 @@
-/**
- * PM2 Ecosystem Configuration for MOSA IoT RFID Gate Bridge
- * Usage:
- *   pm2 start ecosystem.config.js
- *   pm2 stop ecosystem.config.js
- *   pm2 restart ecosystem.config.js
- *   pm2 logs mosa-edge-bridge
- */
-
 module.exports = {
   apps: [
     {
-      name: 'mosa-edge-bridge',
+      name: 'mosa-edge',
       script: 'src/index.js',
-      cwd: __dirname,
-      instances: 1,
+      cwd: '/Users/apple/Downloads/Mosaik-WMS/edge-bridge',
+      // Load env dari .env file
+      env_file: '.env',
+      // Auto-restart saat crash
       autorestart: true,
       watch: false,
-      max_memory_restart: '300M',
-      env: {
-        NODE_ENV: 'production',
-        PORT: 2077,
-        WS_PORT: 2078,
-        LOG_LEVEL: 'info',    // R-11: explicit — never allow debug log flooding in production
-      },
-      listen_timeout: 10000,  // R-26: wait up to 10s for startup before restart
-      shutdown_with_message: true,
-      error_file: './logs/edge-bridge-error.log',
-      out_file: './logs/edge-bridge-out.log',
-      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+      max_memory_restart: '256M',
+      // Restart delay (ms) supaya reader punya waktu reconnect
+      restart_delay: 3000,
+      // Logging
+      out_file: '/Users/apple/.pm2/logs/mosa-edge-out.log',
+      error_file: '/Users/apple/.pm2/logs/mosa-edge-err.log',
+      log_date_format: 'YYYY-MM-DD HH:mm:ss',
       merge_logs: true,
-      kill_timeout: 3000,
-      restart_delay: 2000,
     },
   ],
 };

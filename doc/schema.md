@@ -1,11 +1,11 @@
 # MOSA WMS RFID — Skema Database
 
-> Snapshot migration: 1 Oktober 2026. Source of truth: [`backend/database/migrations`](../backend/database/migrations). Dokumen ini merangkum skema efektif; aturan bisnis yang hanya dijaga controller/service tidak dianggap constraint DB. Database: **PostgreSQL 15**.
+> Snapshot migration: 7 Oktober 2026. Source of truth: [`backend/database/migrations`](../backend/database/migrations). Dokumen ini merangkum skema efektif; aturan bisnis yang hanya dijaga controller/service tidak dianggap constraint DB. Database: **PostgreSQL 16**.
 
 ## Ringkasan
 
-- 30 tabel domain, 10 tabel framework/infrastruktur.
-- Database: PostgreSQL 15. Status/domain value umumnya `VARCHAR`; tidak ada DB `CHECK` untuk sebagian besar enum bisnis.
+- 31 tabel domain, 10 tabel framework/infrastruktur.
+- Database: PostgreSQL 16. Status/domain value umumnya `VARCHAR`; tidak ada DB `CHECK` untuk sebagian besar enum bisnis.
 - Kolom kuantitas/nominal umumnya belum memiliki `CHECK >= 0`.
 - Timestamp standar `created_at/updated_at`, kecuali `custody_ledger` hanya `created_at`.
 
@@ -13,9 +13,10 @@
 
 | Tabel | Kolom penting | Keterangan |
 |:------|:--------------|:-----------|
-| `shipping_documents` | type (inbound/outbound), warehouse_id, status, notes, attachments (JSONB), created_by | Dokumen penerimaan/pengiriman barang. `attachments` menyimpan array path file lampiran. |
+| `shipping_documents` | type (inbound/outbound), warehouse_id, status, notes, attachments (JSONB), created_by_user_id, archived_at, archived_by_user_id | Dokumen penerimaan/pengiriman barang. Arsip bersifat soft archive; attachments menyimpan array metadata/path file. |
 | `shipping_document_items` | document_id, item_id, expected_qty | Item material dalam dokumen. |
-| `shipping_document_tags` | document_item_id, tag_epc, assigned_by, assigned_at | Tag RFID yang di-assign ke item dokumen. |
+| `shipping_document_tags` | document_item_id, nullable `rfid_tag_id`, tag_epc, assigned_by, assigned_at, `length_dispatched` DECIMAL nullable | Assignment menyimpan EPC historis. `length_dispatched` = meter yang diambil dalam dokumen ini (partial withdrawal drum kabel). Hard-delete tag hanya setelah dokumen terminal; FK registry menjadi NULL (`2026_10_07_000002`) dan assignment/EPC tidak terhapus. |
+| `shipping_document_audits` | shipping_document_id, actor_user_id, action, before_json, after_json, created_at | Snapshot perubahan/arsip dokumen; FK dokumen RESTRICT, actor NULL ON DELETE. Model menolak update/delete, tetapi DB belum menjamin append-only. |
 
 
 ## ERD Domain Inti
@@ -64,8 +65,8 @@ erDiagram
 
 | Tabel | Kolom/relasi penting | Constraint/index |
 |---|---|---|
-| `items` | code/name/category, is_metal, is_reusable, is_serialized_tag, unit, min_stock, description, epc_prefix, epc_suffix_digits, epc_next_sequence | code dan nullable epc_prefix unique. Counter di-lock saat generate batch; prefix lama tidak mengubah EPC existing. |
-| `rfid_tags` | epc, item_id, tag_type/status, last_warehouse_id, project_id, last_read_at, notes | epc unique; status mencakup `reserved`; item CASCADE; warehouse/project `NULL ON DELETE`. Belum ada TID/password/lock. |
+| `items` | code/name/category, is_metal, is_reusable, is_serialized_tag, **`is_length_based`** (BOOLEAN default false), unit, min_stock, description, epc_prefix, epc_suffix_digits, epc_next_sequence | code dan nullable epc_prefix unique. `is_length_based=true` untuk material ukur (kabel, selang, pipa) — satu tag bisa exit berkali-kali sampai habis. |
+| `rfid_tags` | epc, item_id, tag_type/status, last_warehouse_id, project_id, last_read_at, notes, **`total_length_m`** DECIMAL nullable, **`remaining_length_m`** DECIMAL nullable | epc unique; status mencakup `reserved`; item CASCADE; warehouse/project `NULL ON DELETE`. `total_length_m` = panjang awal drum; `remaining_length_m` dikurangi tiap GATE_OUT partial. Belum ada TID/password/lock. |
 
 ## Kontrak dan Delivery
 
@@ -110,7 +111,7 @@ Status transaksi gerbang berbentuk string. Aplikasi juga memakai `return_verifie
 | `tag_epc` | VARCHAR nullable, indexed | Tidak memiliki FK ke `rfid_tags.epc`. |
 | `item_id` | FK, CASCADE | Risiko: penghapusan item menghapus histori. |
 | `holder_user_id` | FK, RESTRICT | Identitas actor dipertahankan. |
-| `action` | VARCHAR indexed | Contoh `TAG_ENROLLED` (EPC wajib, tanpa referensi, gudang hanya konteks reader/audit; tidak mengubah stok), `STOCK_IN`, `PREPARED`, `GATE_OUT`, `INSTALLED`. |
+| `action` | VARCHAR indexed | Contoh `TAG_ENROLLED` (EPC wajib, tanpa referensi, gudang hanya konteks reader/audit; tidak mengubah stok), `STOCK_IN`, `PREPARED`, `GATE_OUT`, `PARTIAL_OUT` (withdrawal parsial drum kabel — tag tetap attached), `GATE_IN`, `INSTALLED`, `STOCK_WRITE_OFF` (penghapusan stok terdokumentasi setelah tag dinonaktifkan). |
 | `ref_type`, `ref_id` | Polymorphic nullable, indexed | Tidak memiliki FK. |
 | `warehouse_id` | FK nullable, NULL ON DELETE | Lokasi terkait. |
 | `latitude`, `longitude`, `photo_url`, `notes` | Nullable | Bukti/konteks event. |

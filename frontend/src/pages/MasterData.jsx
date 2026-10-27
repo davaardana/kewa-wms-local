@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { FlameButton } from '../components/ui/flame-button';
-import { masterApi, userApi } from '../services/api';
+import { masterApi, reportApi, tagApi, userApi } from '../services/api';
 import { showToast } from '../components/Toast';
 import Portal from '../components/Portal';
 import { 
@@ -23,14 +23,21 @@ import {
   Phone,
   Layers,
   MapPin,
-  Cpu
+  Cpu,
+  ChevronDown,
+  ChevronUp
 } from 'lucide-react';
 
 export default function MasterData({ defaultTab = 'items', onNavigate = null, currentUser = null }) {
-  const [activeTab, setActiveTab] = useState(defaultTab || 'items'); // items, warehouses, projects
+  const [activeTab, setActiveTab] = useState(defaultTab || 'items'); // items, warehouses, projects, stock
   const [items, setItems] = useState([]);
   const [warehouses, setWarehouses] = useState([]);
   const [projects, setProjects] = useState([]);
+  const [stockRows, setStockRows] = useState([]);
+  const [stockTagPages, setStockTagPages] = useState({});
+  const [expandedStockKey, setExpandedStockKey] = useState(null);
+  const [stockTagsLoadingKey, setStockTagsLoadingKey] = useState(null);
+  const [stockWarehouseFilter, setStockWarehouseFilter] = useState('');
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
@@ -93,6 +100,13 @@ export default function MasterData({ defaultTab = 'items', onNavigate = null, cu
         setProjects(prRes.data || []);
       } else if (targetTab === 'warehouses') {
         const whRes = await masterApi.getWarehouses();
+        setWarehouses(whRes.data || []);
+      } else if (targetTab === 'stock') {
+        const [stockRes, whRes] = await Promise.all([
+          reportApi.getStocks(),
+          masterApi.getWarehouses(),
+        ]);
+        setStockRows(stockRes.data?.data || []);
         setWarehouses(whRes.data || []);
       } else {
         const itRes = await masterApi.getItems();
@@ -291,8 +305,68 @@ export default function MasterData({ defaultTab = 'items', onNavigate = null, cu
             pr.code.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
+  const filteredStocks = stockRows.filter((row) => {
+    const matchesWarehouse = !stockWarehouseFilter || String(row.warehouse.id) === stockWarehouseFilter;
+    const searchText = `${row.item.name} ${row.item.code} ${row.warehouse.name} ${row.warehouse.code}`.toLowerCase();
+    return matchesWarehouse && searchText.includes(searchTerm.toLowerCase());
+  });
+
+  const loadStockTags = async (row, page = 1) => {
+    const key = `${row.warehouse.id}-${row.item.id}`;
+    const cachedPage = stockTagPages[key];
+    if (cachedPage?.current_page === page) return;
+
+    setStockTagsLoadingKey(key);
+    try {
+      const response = await tagApi.getTags({
+        item_id: row.item.id,
+        warehouse_id: row.warehouse.id,
+        status: 'active',
+        page,
+        per_page: 50,
+      });
+      setStockTagPages((previous) => ({ ...previous, [key]: response.data }));
+    } catch (err) {
+      showToast('Gagal memuat daftar EPC aktif: ' + (err.response?.data?.message || err.message), 'error');
+    } finally {
+      setStockTagsLoadingKey(null);
+    }
+  };
+
+  const toggleStockTags = (row) => {
+    const key = `${row.warehouse.id}-${row.item.id}`;
+    if (expandedStockKey === key) {
+      setExpandedStockKey(null);
+      return;
+    }
+    setExpandedStockKey(key);
+    loadStockTags(row);
+  };
+
   return (
     <div className="space-y-4">
+      <nav aria-label="Master Data" className="flex gap-1 overflow-x-auto border-b border-slate-200">
+        {[
+          ['items', 'Material', Package],
+          ['stock', 'Stock', Tag],
+        ].map(([tab, label, Icon]) => (
+          <button
+            key={tab}
+            type="button"
+            onClick={() => {
+              setActiveTab(tab);
+              setSearchTerm('');
+              loadData(tab);
+            }}
+            aria-current={activeTab === tab ? 'page' : undefined}
+            className={`inline-flex shrink-0 items-center gap-2 border-b-2 px-3 py-2.5 text-xs font-semibold transition-colors ${activeTab === tab ? 'border-blue-600 text-blue-700' : 'border-transparent text-slate-500 hover:text-slate-800'}`}
+          >
+            <Icon className="h-4 w-4" />
+            {label}
+          </button>
+        ))}
+      </nav>
+
       {/* Header */}
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 border-b border-slate-200 pb-3">
         <div>
@@ -300,6 +374,7 @@ export default function MasterData({ defaultTab = 'items', onNavigate = null, cu
             {activeTab === 'projects' && 'Proyek Rollout FO'}
             {activeTab === 'warehouses' && 'Gudang Transit & Staf Yard'}
             {activeTab === 'items' && 'Katalog Material FO'}
+            {activeTab === 'stock' && 'Stock Aktif'}
           </h1>
           <p className="text-xs text-slate-500 mt-0.5">
             {activeTab === 'projects' && 'Kelola proyek fiber optic rollout, alokasi wilayah, dan keterhubungan dengan SPK & WO.'}
@@ -372,6 +447,7 @@ export default function MasterData({ defaultTab = 'items', onNavigate = null, cu
               Total: {
                 activeTab === 'projects' ? `${projects.length} Proyek` :
                 activeTab === 'warehouses' ? `${warehouses.length} Gudang Transit` :
+                activeTab === 'stock' ? `${filteredStocks.length} Item-Gudang` :
                 `${items.length} Jenis Material`
               }
             </span>
@@ -385,6 +461,7 @@ export default function MasterData({ defaultTab = 'items', onNavigate = null, cu
             placeholder={
               activeTab === 'projects' ? 'Cari nama, kode proyek, klien...' :
               activeTab === 'warehouses' ? 'Cari nama gudang, kode, PIC...' :
+              activeTab === 'stock' ? 'Cari barang atau gudang...' :
               'Cari nama barang, kode item...'
             }
             value={searchTerm}
@@ -393,6 +470,120 @@ export default function MasterData({ defaultTab = 'items', onNavigate = null, cu
           />
         </div>
       </div>
+
+      {activeTab === 'stock' && (
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-xs text-slate-500">Saldo dihitung dari tag RFID aktif yang tercatat di gudang.</p>
+          <select
+            aria-label="Filter gudang stock"
+            value={stockWarehouseFilter}
+            onChange={(event) => setStockWarehouseFilter(event.target.value)}
+            className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-700 sm:w-64"
+          >
+            <option value="">Semua Gudang</option>
+            {warehouses.map((warehouse) => (
+              <option key={warehouse.id} value={warehouse.id}>{warehouse.name} ({warehouse.code})</option>
+            ))}
+          </select>
+        </div>
+      )}
+
+      {activeTab === 'stock' && (
+        <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xs">
+          <div className="overflow-x-auto">
+            <table className="w-full border-collapse text-left text-xs">
+              <thead>
+                <tr className="border-b border-slate-200 bg-slate-50 text-[10px] font-bold uppercase tracking-wider text-slate-600">
+                  <th className="px-3.5 py-3">Barang</th>
+                  <th className="px-3.5 py-3">Gudang</th>
+                  <th className="px-3.5 py-3">Kategori</th>
+                  <th className="px-3.5 py-3 text-right">Tag Aktif</th>
+                  <th className="px-3.5 py-3 text-right">Kuantitas</th>
+                  <th className="px-3.5 py-3 text-right">EPC</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {loading ? (
+                  <tr><td colSpan={6} className="py-12 text-center text-slate-500">Memuat saldo stock...</td></tr>
+                ) : filteredStocks.length === 0 ? (
+                  <tr><td colSpan={6} className="py-12 text-center text-slate-500">Tidak ada stock aktif yang sesuai.</td></tr>
+                ) : filteredStocks.map((row) => {
+                  const key = `${row.warehouse.id}-${row.item.id}`;
+                  const page = stockTagPages[key];
+                  const expanded = expandedStockKey === key;
+                  return (
+                    <React.Fragment key={key}>
+                      <tr className="hover:bg-slate-50/80">
+                        <td className="px-3.5 py-3">
+                          <div className="font-semibold text-slate-800">{row.item.name}</div>
+                          <div className="mt-0.5 font-mono text-[10px] text-slate-500">{row.item.code}</div>
+                        </td>
+                        <td className="px-3.5 py-3">
+                          <div className="font-medium text-slate-700">{row.warehouse.name}</div>
+                          <div className="mt-0.5 font-mono text-[10px] text-slate-500">{row.warehouse.code}</div>
+                        </td>
+                        <td className="px-3.5 py-3 text-slate-600">{row.item.category || '-'}</td>
+                        <td className="px-3.5 py-3 text-right font-mono font-semibold text-slate-800">{row.active_tag_count}</td>
+                        <td className="px-3.5 py-3 text-right text-slate-700">
+                          {row.stock_qty === null ? 'Tidak tersedia' : `${row.stock_qty} ${row.item.unit || ''}`}
+                        </td>
+                        <td className="px-3.5 py-3 text-right">
+                          <button
+                            type="button"
+                            onClick={() => toggleStockTags(row)}
+                            aria-expanded={expanded}
+                            className="inline-flex items-center gap-1 rounded-md px-2 py-1 font-semibold text-blue-700 hover:bg-blue-50"
+                          >
+                            {expanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                            {row.active_tag_count} EPC
+                          </button>
+                        </td>
+                      </tr>
+                      {expanded && (
+                        <tr>
+                          <td colSpan={6} className="bg-slate-50/70 px-3.5 py-3">
+                            {stockTagsLoadingKey === key ? (
+                              <p className="py-4 text-center text-slate-500">Memuat EPC...</p>
+                            ) : !page?.data?.length ? (
+                              <p className="py-4 text-center text-slate-500">Tidak ada EPC aktif pada halaman ini.</p>
+                            ) : (
+                              <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
+                                <table className="w-full text-left text-xs">
+                                  <thead className="border-b border-slate-200 bg-slate-50 text-[10px] font-bold uppercase text-slate-500">
+                                    <tr><th className="px-3 py-2">No. Tag / EPC</th><th className="px-3 py-2">Status</th><th className="px-3 py-2">Terakhir Terbaca</th></tr>
+                                  </thead>
+                                  <tbody className="divide-y divide-slate-100">
+                                    {page.data.map((tag) => (
+                                      <tr key={tag.id}>
+                                        <td className="px-3 py-2 font-mono font-semibold text-slate-800">{tag.epc}</td>
+                                        <td className="px-3 py-2"><span className="rounded bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">Aktif</span></td>
+                                        <td className="px-3 py-2 text-slate-500">{tag.last_read_at ? new Date(tag.last_read_at).toLocaleString('id-ID') : '-'}</td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                                {page.last_page > 1 && (
+                                  <div className="flex items-center justify-between border-t border-slate-200 px-3 py-2 text-[11px] text-slate-600">
+                                    <span>Halaman {page.current_page} dari {page.last_page} · {page.total} tag</span>
+                                    <div className="flex gap-2">
+                                      <button type="button" disabled={page.current_page <= 1} onClick={() => loadStockTags(row, page.current_page - 1)} className="rounded border border-slate-200 px-2 py-1 disabled:opacity-40">Sebelumnya</button>
+                                      <button type="button" disabled={page.current_page >= page.last_page} onClick={() => loadStockTags(row, page.current_page + 1)} className="rounded border border-slate-200 px-2 py-1 disabled:opacity-40">Berikutnya</button>
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
 
       {/* Tab 1: Material Items Table */}
       {activeTab === 'items' && (

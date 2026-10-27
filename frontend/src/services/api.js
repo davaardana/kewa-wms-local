@@ -24,6 +24,35 @@ const api = axios.create({
   },
 });
 
+const referenceCache = new Map();
+const REFERENCE_CACHE_TTL_MS = 5 * 60 * 1000;
+
+const copyCachedResponse = (response) => ({
+  ...response,
+  data: response.data == null ? response.data : JSON.parse(JSON.stringify(response.data)),
+});
+
+const getCachedReference = (key, request) => {
+  const cached = referenceCache.get(key);
+  if (cached?.expiresAt > Date.now()) return Promise.resolve(copyCachedResponse(cached.response));
+  if (cached?.pending) return cached.pending.then(copyCachedResponse);
+
+  const entry = { expiresAt: 0, pending: null, response: null };
+  entry.pending = request().then((response) => {
+    entry.response = response;
+    entry.expiresAt = Date.now() + REFERENCE_CACHE_TTL_MS;
+    entry.pending = null;
+    return response;
+  }).catch((error) => {
+    if (referenceCache.get(key) === entry) referenceCache.delete(key);
+    throw error;
+  });
+  referenceCache.set(key, entry);
+  return entry.pending.then(copyCachedResponse);
+};
+
+const invalidateReference = (key) => referenceCache.delete(key);
+
 // Attach token & track mutating requests
 api.interceptors.request.use((config) => {
   if (config.data instanceof FormData) {
@@ -131,11 +160,11 @@ export const userApi = {
 
 // ── Master Data (Gudang & Item) ───────────────────────────────
 export const masterApi = {
-  getWarehouses:   ()              => api.get('/warehouses'),
-  createWarehouse: (data)          => api.post('/warehouses', data),
-  updateWarehouse: (id, data)      => api.put(`/warehouses/${id}`, data),
-  getItems:        ()              => api.get('/items'),
-  createItem:      (data)          => api.post('/items', data),
+  getWarehouses:   ()              => getCachedReference('warehouses', () => api.get('/warehouses')),
+  createWarehouse: (data)          => api.post('/warehouses', data).then((response) => { invalidateReference('warehouses'); return response; }),
+  updateWarehouse: (id, data)      => api.put(`/warehouses/${id}`, data).then((response) => { invalidateReference('warehouses'); return response; }),
+  getItems:        ()              => getCachedReference('items', () => api.get('/items')),
+  createItem:      (data)          => api.post('/items', data).then((response) => { invalidateReference('items'); return response; }),
 };
 
 // ── RFID Tags ─────────────────────────────────────────────────
@@ -150,6 +179,7 @@ export const tagApi = {
   getTag:         (epc)            => api.get(`/tags/${epc}`),
   updateStatus:   (epc, status, notes) => api.patch(`/tags/${normalizeEpc(epc)}/status`, { status, notes }),
   deleteTag:      (epc)            => api.delete(`/tags/${normalizeEpc(epc)}`),
+  hardDeleteTag:  (epc)            => api.delete(`/tags/${normalizeEpc(epc)}/hard-delete`),
   reactivateTag:  (epc)            => api.post(`/tags/${normalizeEpc(epc)}/reactivate`),
   bulkDeleteTags: (epcs)           => api.post('/tags/bulk-delete', { epcs: normalizeEpcList(epcs) }),
 };
@@ -166,13 +196,16 @@ export const shippingApi = {
   scanTag:         (id, epc)       => api.post(`/shipping-documents/${id}/scan-tag`, { epc: normalizeEpc(epc) }),
   batchScanTags:   (id, epcs)      => api.post(`/shipping-documents/${id}/batch-scan`, { epcs: normalizeEpcList(epcs) }),
   completeDocument:(id)            => api.post(`/shipping-documents/${id}/complete`),
+  updateDocument:  (id, data)      => api.put(`/shipping-documents/${id}`, data),
+  deleteDocument:  (id)            => api.delete(`/shipping-documents/${id}`),
+  previewStockReconciliation: (id) => api.get(`/shipping-documents/${id}/stock-reconciliation`),
+  reconcileInboundStock: (id, data) => api.post(`/shipping-documents/${id}/stock-reconciliation`, data),
   cancelDocument:  (id)            => api.post(`/shipping-documents/${id}/cancel`),
 };
 
 // ── Gate Monitor (Live Feed & Event Logs) ─────────────────────
 export const gateApi = {
-  getLiveFeed:       (warehouseId)   => api.get('/gate/live-feed', { params: { warehouse_id: warehouseId } }),
-  triggerGateEvent:  (payload)       => api.post('/gate/simulate', payload),
+  getLiveFeed:       (warehouseId, sinceId) => api.get('/gate/live-feed', { params: { warehouse_id: warehouseId, ...(sinceId ? { since_id: sinceId } : {}) } }),
   deleteEvent:       (id)            => api.delete(`/gate/events/${id}`),
   clearHistory:      (warehouseId)   => api.delete('/gate/events', { params: { warehouse_id: warehouseId }, data: { warehouse_id: warehouseId } }),
 };
@@ -203,7 +236,8 @@ export const reportApi = {
   getStocks:           (params)              => api.get('/reports/stocks', { params }),
   getStockCard:        (params)              => api.get('/reports/stock-card', { params }),
   getAuditTrail:       (params)              => api.get('/reports/audit-trail', { params }),
-  getDashboardKpis:    ()                    => api.get('/reports/dashboard-kpis'),
+  // Percepatan: cache KPI 5 menit — Dashboard terasa instan saat re-visit
+  getDashboardKpis:    ()                    => getCachedReference('dashboard-kpis', () => api.get('/reports/dashboard-kpis')),
   reconcileStockOpname:(warehouseId, epcs)  => api.post('/reports/stock-opname', { warehouse_id: warehouseId, scanned_epcs: epcs }),
 };
 

@@ -1,8 +1,9 @@
 import { FlameButton } from '../components/ui/flame-button';
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, memo } from 'react';
 import { gateApi, masterApi } from '../services/api';
 import { openAuthenticatedEdgeSocket } from '../services/edgeWebSocket';
 import { showToast } from '../components/Toast';
+import { pushNotification } from '../components/NotificationBell';
 import Portal from '../components/Portal';
 import { 
   Radio, 
@@ -27,12 +28,90 @@ import {
 } from 'lucide-react';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || (typeof window !== 'undefined' && window.location.port !== '5173' ? '/api' : `http://${typeof window !== 'undefined' ? window.location.hostname : '127.0.0.1'}:8000/api`);
+const SIMULATION_SCENARIOS = {
+  VALID_PASS: {
+    label: 'Lewat Sah',
+    status: 'SUCCESS',
+    mismatch: false,
+    totalTags: 1,
+    details: 'Tag sesuai dengan dokumen aktif (contoh simulasi).',
+  },
+  UNAPPROVED_BREACH: {
+    label: 'Terobosan Ilegal',
+    status: 'DENIED',
+    mismatch: true,
+    totalTags: 3,
+    details: 'Tidak ada dokumen aktif untuk perlintasan (contoh simulasi).',
+  },
+  OVER_QUOTA: {
+    label: 'Kuota Berlebih',
+    status: 'DENIED',
+    mismatch: true,
+    totalTags: 6,
+    details: 'Jumlah tag melebihi kuota dokumen (contoh simulasi).',
+  },
+  UNREGISTERED_TAG: {
+    label: 'Tag Asing',
+    status: 'DENIED',
+    mismatch: true,
+    totalTags: 2,
+    details: 'Terdapat EPC yang belum terdaftar (contoh simulasi).',
+  },
+};
+
+// ── Percepatan #3: React.memo untuk event row ─────────────────────────────────
+// Mencegah re-render seluruh list saat satu event baru masuk via WebSocket.
+// Row hanya re-render jika evt.id atau evt.mismatch_flag berubah.
+const GateEventRow = memo(function GateEventRow({ evt, onDelete }) {
+  return (
+    <tr key={evt.id} className={evt.mismatch_flag ? 'bg-rose-50/50' : 'hover:bg-slate-50 transition'}>
+      <td className="px-4 py-2.5 text-slate-500 font-mono whitespace-nowrap">
+        {new Date(evt.created_at).toLocaleTimeString('id-ID')}
+      </td>
+      <td className="px-4 py-2.5">
+        <div className="font-semibold text-slate-800">{evt.gate_id}</div>
+        <div className="text-[10px] text-slate-400">{evt.warehouse?.name}</div>
+        {evt.shipping_document && (
+          <div className="text-[10px] text-indigo-600 font-medium">
+            #{evt.shipping_document.document_number}
+          </div>
+        )}
+      </td>
+      <td className="px-4 py-2.5 font-mono font-bold text-slate-700">{evt.direction}</td>
+      <td className="px-4 py-2.5 font-mono font-bold text-slate-800">{evt.total_tags_detected}</td>
+      <td className="px-4 py-2.5">
+        <span className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-bold border ${
+          evt.mismatch_flag
+            ? 'bg-rose-100 text-rose-700 border-rose-200'
+            : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+        }`}>
+          {evt.mismatch_flag ? 'Anomali' : 'Sesuai'}
+        </span>
+      </td>
+      <td className="px-4 py-2.5 max-w-[220px]">
+        {evt.mismatch_flag ? (
+          <span className="text-rose-600 text-[11px] font-medium">{evt.mismatch_details}</span>
+        ) : (
+          <span className="text-slate-400">—</span>
+        )}
+      </td>
+      <td className="px-4 py-2.5 text-center">
+        <button onClick={() => onDelete(evt.id)}
+          className="p-1 text-slate-300 hover:text-rose-500 hover:bg-rose-50 rounded-lg transition cursor-pointer">
+          <Trash2 className="w-3.5 h-3.5" />
+        </button>
+      </td>
+    </tr>
+  );
+}, (prev, next) => prev.evt.id === next.evt.id && prev.evt.mismatch_flag === next.evt.mismatch_flag);
+
+
 export default function GateMonitor({ onNavigate = null, onOpenPairing = null, currentUser = null }) {
   const [events, setEvents] = useState([]);
   const [warehouses, setWarehouses] = useState([]);
   const [selectedWarehouse, setSelectedWarehouse] = useState('ALL');
   const [loading, setLoading] = useState(false);
-  const [simulating, setSimulating] = useState(false);
+  const [simulationResult, setSimulationResult] = useState(null);
   const [lastPass, setLastPass] = useState(null);
   const [secondsAgo, setSecondsAgo] = useState(0);
   const [streamMode, setStreamMode] = useState('CONNECTING'); // 'WEBSOCKET' | 'SSE_STREAM' | 'POLLING_FALLBACK'
@@ -40,13 +119,43 @@ export default function GateMonitor({ onNavigate = null, onOpenPairing = null, c
   const [dismissedAlertIds, setDismissedAlertIds] = useState(new Set());
   const [showClearModal, setShowClearModal] = useState(false);
   const [deleting, setDeleting] = useState(false);
-  const [liveTagDetection, setLiveTagDetection] = useState(null);
+  const [liveTagDetections, setLiveTagDetections] = useState([]);
+  const [liveDecision, setLiveDecision] = useState(null);
+  // ── Rekomendasi #2: Live Indicator ──────────────────────────────────────────
+  const [lastUpdatedAt, setLastUpdatedAt] = useState(null);
+  const [timeSinceUpdate, setTimeSinceUpdate] = useState(null);
+  const streamConnected = streamMode === 'WEBSOCKET' || streamMode === 'SSE_STREAM';
+  // ── Percepatan #4: Virtual Scroll ──────────────────────────────────────
+  // Hanya render 20 row pertama, tambah 20 per scroll ke bawah
+  const [visibleCount, setVisibleCount] = useState(20);
+  const sentinelRef = useRef(null);
+
+  // Reset visible count saat warehouse berganti
+  useEffect(() => { setVisibleCount(20); }, [selectedWarehouse]);
+
+  // IntersectionObserver: saat sentinel terlihat, tambah 20 row
+  useEffect(() => {
+    if (!sentinelRef.current) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting) {
+          setVisibleCount((c) => Math.min(c + 20, events.length));
+        }
+      },
+      { threshold: 0.1 }
+    );
+    observer.observe(sentinelRef.current);
+    return () => observer.disconnect();
+  }, [events.length]);
 
   const soundAlertRef = useRef(soundAlert);
   const dismissedAlertIdsRef = useRef(new Set());
   const lastSeenEventIdRef = useRef(null);
+  const lastFeedIdRef = useRef(0);
   const wsRef = useRef(null);
   const isFetchingRef = useRef(false);
+  const pendingLiveTagsRef = useRef(new Map());
+  const liveTagFrameRef = useRef(null);
 
   // Keep soundAlertRef updated synchronously
   useEffect(() => {
@@ -90,63 +199,76 @@ export default function GateMonitor({ onNavigate = null, onOpenPairing = null, c
   };
 
   const handleDeleteSingle = async (eventId) => {
-    try {
-      await gateApi.deleteEvent(eventId);
-      setEvents((prev) => prev.filter((e) => e.id !== eventId));
-      if (lastPass?.id === eventId) {
-        setLastPass(null);
-      }
-      showToast(`Log #${eventId} berhasil dihapus`, 'success');
-    } catch (err) {
-      showToast(err.response?.data?.message || 'Gagal menghapus log RFID', 'error');
+    setEvents((prev) => prev.filter((event) => event.id !== eventId));
+    if (lastPass?.id === eventId) {
+      setLastPass(null);
     }
+    showToast(`Log #${eventId} dihapus dari tampilan. Bukti audit tetap tersimpan.`, 'success');
   };
 
   const handleClearAll = async () => {
     setDeleting(true);
     try {
-      const res = await gateApi.clearHistory(selectedWarehouse);
       setEvents([]);
       setLastPass(null);
       lastSeenEventIdRef.current = null;
       setShowClearModal(false);
-      showToast(res.data.message || 'Riwayat log RFID berhasil dibersihkan', 'success');
-    } catch (err) {
-      showToast(err.response?.data?.message || 'Gagal membersihkan log RFID', 'error');
+      showToast('Tampilan log RFID dibersihkan. Bukti audit tetap tersimpan.', 'success');
     } finally {
       setDeleting(false);
     }
   };
 
-  const loadEvents = useCallback(async (isSilent = true) => {
+  const applyFeedEvents = useCallback((incomingEvents, replace = false) => {
+    if (!Array.isArray(incomingEvents) || incomingEvents.length === 0) return;
+    const newest = incomingEvents.reduce((latest, event) => event.id > latest.id ? event : latest);
+    lastFeedIdRef.current = Math.max(lastFeedIdRef.current, ...incomingEvents.map((event) => Number(event.id) || 0));
+
+    setEvents((previous) => {
+      if (replace) return incomingEvents.slice(0, 50);
+      const merged = new Map(previous.map((event) => [event.id, event]));
+      incomingEvents.forEach((event) => merged.set(event.id, event));
+      return [...merged.values()].sort((a, b) => b.id - a.id).slice(0, 50);
+    });
+
+    const isNewEvent = lastSeenEventIdRef.current !== null && lastSeenEventIdRef.current !== newest.id;
+    const isDismissed = dismissedAlertIdsRef.current.has(newest.id);
+    const isUnderCount = newest.mismatch_details?.includes('MUATAN BELUM LENGKAP');
+    if (newest.mismatch_flag && !isDismissed && isNewEvent && !isUnderCount) playSiren();
+
+    // ── Rekomendasi #8: Push mismatch ke Notification Bell ─────────────────
+    if (newest.mismatch_flag && !isDismissed && isNewEvent) {
+      pushNotification({
+        type: 'mismatch',
+        title: `Anomali Gate — ${newest.gate_id || 'GATE'}`,
+        body: newest.mismatch_details || 'Terdeteksi ketidaksesuaian pada perlintasan RFID.',
+      });
+    }
+
+    lastSeenEventIdRef.current = newest.id;
+    setLastPass(newest);
+    setLiveDecision((pending) => pending?.event_id && incomingEvents.some((event) => event.event_id === pending.event_id) ? null : pending);
+    setSecondsAgo(0);
+    // ── Rekomendasi #2: Catat waktu event terakhir diterima ────────────────
+    setLastUpdatedAt(Date.now());
+    setTimeSinceUpdate(0);
+  }, [playSiren]);
+
+  const loadEvents = useCallback(async (isSilent = true, sinceId = null) => {
     if (isFetchingRef.current) return;
     try {
       isFetchingRef.current = true;
       if (!isSilent) setLoading(true);
-      const res = await gateApi.getLiveFeed(selectedWarehouse);
-      setEvents(res.data);
-      setSecondsAgo(0);
-
-      if (res.data.length > 0) {
-        const newest = res.data[0];
-        const isNewEvent = lastSeenEventIdRef.current !== null && lastSeenEventIdRef.current !== newest.id;
-        const isDismissed = dismissedAlertIdsRef.current.has(newest.id);
-        const isUnderCount = newest.mismatch_details?.includes('MUATAN BELUM LENGKAP');
-
-        if (newest.mismatch_flag && !isDismissed && isNewEvent && !isUnderCount) {
-          playSiren();
-        }
-
-        lastSeenEventIdRef.current = newest.id;
-        setLastPass(newest);
-      }
+      const cursor = sinceId ?? (lastFeedIdRef.current || null);
+      const res = await gateApi.getLiveFeed(selectedWarehouse, cursor);
+      applyFeedEvents(res.data, !cursor);
     } catch (err) {
       console.error('Error fetching live gate feed:', err);
     } finally {
       isFetchingRef.current = false;
       if (!isSilent) setLoading(false);
     }
-  }, [selectedWarehouse, playSiren]);
+  }, [selectedWarehouse, applyFeedEvents]);
 
   useEffect(() => {
     masterApi.getWarehouses().then((res) => {
@@ -159,16 +281,132 @@ export default function GateMonitor({ onNavigate = null, onOpenPairing = null, c
     });
   }, []);
 
+  useEffect(() => {
+    if (!liveDecision) return undefined;
+    const timeout = setTimeout(() => setLiveDecision(null), 15000);
+    return () => clearTimeout(timeout);
+  }, [liveDecision]);
+
   const [bridgeMode, setBridgeMode] = useState('GATE_SECURITY');
   const [testingScan, setTestingScan] = useState(false);
 
   // Optimized Live Stream: Direct WebSocket (Hardware edge push) + Non-blocking Polling Fallback
   useEffect(() => {
+    lastFeedIdRef.current = 0;
+    lastSeenEventIdRef.current = null;
+    setEvents([]);
+    setLastPass(null);
+    setLiveTagDetections([]);
     let ws = null;
     let pollTimer = null;
     let heartbeatTimer = null;
     let reconnectTimer = null;
+    let sseReconnectTimer = null;
+    let sseController = null;
+    let sseConnecting = false;
+    let lastRefreshedGateEventId = null;
     let isDisposed = false;
+
+    const refreshForGateEvent = (message) => {
+      const eventId = message.event_id || message.payload?.event_id;
+      if (eventId && eventId === lastRefreshedGateEventId) return;
+      if (eventId) lastRefreshedGateEventId = eventId;
+      loadEvents(true);
+    };
+
+    const scheduleWebSocketReconnect = () => {
+      if (reconnectTimer) return;
+      reconnectTimer = setInterval(() => {
+        if (isDisposed) return;
+        if (!wsRef.current || wsRef.current.readyState === WebSocket.CLOSED) connectWebSocket();
+      }, 15000);
+    };
+
+    const queueLiveTag = (data) => {
+      const key = `${data.epc}:${data.antenna ?? 1}`;
+      const pending = pendingLiveTagsRef.current;
+      const previous = pending.get(key);
+      pending.set(key, {
+        epc: data.epc,
+        antenna: data.antenna ?? 1,
+        rssi: Math.max(Number(data.rssi) || -200, previous?.rssi ?? -200),
+        count: previous && Date.now() - previous.last_seen_ms < 1000 ? previous.count + 1 : 1,
+        last_seen_ms: Date.now(),
+        timestamp: data.timestamp || new Date().toISOString(),
+      });
+
+      if (liveTagFrameRef.current !== null) return;
+      liveTagFrameRef.current = requestAnimationFrame(() => {
+        liveTagFrameRef.current = null;
+        const batch = [...pendingLiveTagsRef.current.values()];
+        pendingLiveTagsRef.current.clear();
+        setLiveTagDetections((current) => {
+          const detections = new Map(current.map((item) => [`${item.epc}:${item.antenna}`, item]));
+          batch.forEach((item) => {
+            const itemKey = `${item.epc}:${item.antenna}`;
+            const existing = detections.get(itemKey);
+            detections.set(itemKey, {
+              ...item,
+              count: existing && item.last_seen_ms - existing.last_seen_ms < 1000 ? item.count + existing.count : item.count,
+              rssi: Math.max(item.rssi, existing?.rssi ?? -200),
+            });
+          });
+          return [...detections.values()].sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp)).slice(0, 8);
+        });
+      });
+    };
+
+    const startSseFallback = async () => {
+      if (isDisposed || sseConnecting) return;
+      sseConnecting = true;
+      setStreamMode('SSE_STREAM');
+      scheduleWebSocketReconnect();
+      sseController = new AbortController();
+      try {
+        const endpoint = new URL(`${API_BASE_URL.replace(/\/$/, '')}/gate/stream`, window.location.origin);
+        if (selectedWarehouse !== 'ALL') endpoint.searchParams.set('warehouse_id', selectedWarehouse);
+        if (lastFeedIdRef.current > 0) endpoint.searchParams.set('since_id', String(lastFeedIdRef.current));
+        const token = localStorage.getItem('mosa_token');
+        const response = await fetch(endpoint, {
+          headers: { Accept: 'text/event-stream', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+          signal: sseController.signal,
+        });
+        if (!response.ok || !response.body) throw new Error(`SSE failed: ${response.status}`);
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        while (!isDisposed) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
+          const frames = buffer.split('\n\n');
+          buffer = frames.pop() || '';
+          for (const frame of frames) {
+            let eventType = 'message';
+            const dataLines = [];
+            frame.split('\n').forEach((line) => {
+              if (line.startsWith('event:')) eventType = line.slice(6).trim();
+              if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
+            });
+            if (eventType === 'ping') {
+              setSecondsAgo(0);
+              continue;
+            }
+            if (eventType === 'initial' || eventType === 'gate_event') {
+              try { applyFeedEvents(JSON.parse(dataLines.join('\n'))); } catch (error) {
+                console.warn('Invalid gate SSE payload:', error);
+              }
+            }
+          }
+        }
+        if (!isDisposed) sseReconnectTimer = setTimeout(startSseFallback, 250);
+      } catch (error) {
+        if (!isDisposed && error.name !== 'AbortError') startPollingFallback();
+      } finally {
+        sseConnecting = false;
+      }
+    };
 
     // Helper: start smart polling fallback when WebSocket is unavailable
     const startPollingFallback = () => {
@@ -177,34 +415,29 @@ export default function GateMonitor({ onNavigate = null, onOpenPairing = null, c
 
       if (!pollTimer) {
         pollTimer = setInterval(() => {
-          if (isDisposed) return;
-          // Avoid flooding if browser tab is hidden/minimized
-          if (typeof document !== 'undefined' && document.hidden) return;
-          loadEvents(true);
+          if (!isDisposed && (typeof document === 'undefined' || !document.hidden)) {
+            loadEvents(true);
+          }
         }, 3500);
       }
 
-      // Periodically attempt to reconnect to Edge Bridge WebSocket
-      if (!reconnectTimer) {
-        reconnectTimer = setInterval(() => {
-          if (isDisposed) return;
-          if (!wsRef.current || wsRef.current.readyState === WebSocket.CLOSED) {
-            connectWebSocket();
-          }
-        }, 15000);
-      }
+      scheduleWebSocketReconnect();
     };
 
     // Helper: connect to Edge Bridge WebSocket
     const warehouseId = selectedWarehouse === 'ALL' ? null : Number(selectedWarehouse);
 
     const connectWebSocket = async () => {
-      if (isDisposed || !warehouseId) return startPollingFallback();
+      if (isDisposed) return;
+      if (!warehouseId) return startSseFallback();
       try {
         setStreamMode((prev) => (prev === 'POLLING_FALLBACK' ? prev : 'CONNECTING'));
         const socket = await openAuthenticatedEdgeSocket(warehouseId, ['GET_MODE', 'SET_MODE:GATE_SECURITY'], {
           onAuthenticated: (authenticatedSocket) => {
             if (isDisposed) return authenticatedSocket.close();
+            if (sseController) sseController.abort();
+            if (sseReconnectTimer) { clearTimeout(sseReconnectTimer); sseReconnectTimer = null; }
+            if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
             setStreamMode('WEBSOCKET');
             setSecondsAgo(0);
             if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
@@ -222,24 +455,22 @@ export default function GateMonitor({ onNavigate = null, onOpenPairing = null, c
               const activeM = data.mode || data.operational_mode;
               if (activeM) setBridgeMode(activeM);
             } else if (data.type === 'TAG_READ' || data.type === 'TAG_SIGHTING') {
-              // Instant live detection display (<100ms from tag scan)
-              setLiveTagDetection({ epc: data.epc, antenna: data.antenna, rssi: data.rssi, timestamp: data.timestamp });
+              queueLiveTag(data);
             } else if (data.type === 'GATE_DECISION') {
-              // GATE_DECISION: backend sudah respond → langsung reload events list
-              loadEvents(true);
+              setLiveDecision({ ...data, received_at: Date.now() });
+              refreshForGateEvent(data);
             } else if (data.type === 'GATE_EVENT') {
-              // GATE_EVENT: fallback reload (setelah GATE_DECISION sudah duluan)
-              loadEvents(true);
+              refreshForGateEvent(data);
             }
           },
-          onError: () => { if (!isDisposed) startPollingFallback(); },
-          onClose: () => { if (!isDisposed) startPollingFallback(); },
+          onError: () => { if (!isDisposed) startSseFallback(); },
+          onClose: () => { if (!isDisposed) startSseFallback(); },
         });
         if (isDisposed) return socket.close();
         ws = socket;
         wsRef.current = socket;
       } catch (err) {
-        startPollingFallback();
+        startSseFallback();
       }
     };
 
@@ -268,6 +499,9 @@ export default function GateMonitor({ onNavigate = null, onOpenPairing = null, c
       if (pollTimer) clearInterval(pollTimer);
       if (heartbeatTimer) clearInterval(heartbeatTimer);
       if (reconnectTimer) clearInterval(reconnectTimer);
+      if (sseReconnectTimer) clearTimeout(sseReconnectTimer);
+      if (sseController) sseController.abort();
+      if (liveTagFrameRef.current !== null) cancelAnimationFrame(liveTagFrameRef.current);
 
       if (ws) {
         ws.onopen = null;
@@ -282,63 +516,11 @@ export default function GateMonitor({ onNavigate = null, onOpenPairing = null, c
     };
   }, [selectedWarehouse, loadEvents]);
 
-  // Handle various simulation scenarios focusing on Workflow & Sensor Mismatch
-  const handleSimulate = async (scenarioType) => {
-    setSimulating(true);
-    try {
-      const whId = selectedWarehouse === 'ALL' ? (warehouses[0]?.id || 1) : parseInt(selectedWarehouse, 10);
-      const whObj = warehouses.find((w) => w.id === whId);
-      const isSingleAntenna = whObj?.gate_mode === 'SINGLE_ANTENNA_SESSION';
-
-      let payload = {
-        warehouse_id: whId,
-        gate_id: whObj?.code ? `GATE-${whObj.code}` : 'GATE-01',
-        antenna_sequence: isSingleAntenna ? 'SINGLE_ANTENNA' : 'A_TO_B',
-        direction: 'OUT',
-        epc_list: ['E28011606000020410000001'],
-      };
-
-      if (scenarioType === 'VALID_PASS') {
-        // Normal valid pass (needs active session, or system evaluates)
-        payload.epc_list = ['E28011606000020410000001'];
-      } else if (scenarioType === 'UNAPPROVED_BREACH') {
-        // No session exists for this or wrong warehouse
-        payload.antenna_sequence = isSingleAntenna ? 'SINGLE_ANTENNA' : 'A_TO_B';
-        payload.direction = 'OUT';
-        payload.epc_list = ['E28011606000020410000001', 'E28011606000020410000002', 'E28011606000020410000003'];
-      } else if (scenarioType === 'OVER_QUOTA') {
-        // Sensor detects 6 tags when session only authorizes 1
-        payload.epc_list = [
-          'E28011606000020410000001',
-          'E28011606000020410000002',
-          'E28011606000020410000003',
-          'E28011606000020410000004',
-          'E28011606000020410000005',
-          'E28011606000020410000006',
-        ];
-      } else if (scenarioType === 'UNREGISTERED_TAG') {
-        // Tag doesn't exist in database
-        payload.epc_list = ['E28099999999999999999999', 'E28011606000020410000001'];
-      }
-
-      const res = await gateApi.triggerGateEvent(payload);
-      await loadEvents(true);
-
-      if (res.data.mismatch) {
-        if (!res.data.is_undercount) {
-          playSiren();
-          showToast('PERINGATAN ANOMALI: ' + (res.data.mismatch_details?.join('; ') || 'Sensor membaca tag tidak sah!'), 'error');
-        } else {
-          showToast('MUATAN BELUM LENGKAP: ' + (res.data.mismatch_details?.join('; ') || 'Menunggu kelengkapan muatan.'), 'warning');
-        }
-      } else {
-        showToast('SENSOR TERVERIFIKASI SAH: ' + res.data.message, 'success');
-      }
-    } catch (err) {
-      showToast('Simulation error: ' + (err.response?.data?.message || err.message), 'error');
-    } finally {
-      setSimulating(false);
-    }
+  // Simulations are local previews and must never create operational gate evidence.
+  const handleSimulate = (scenarioType) => {
+    const scenario = SIMULATION_SCENARIOS[scenarioType];
+    if (!scenario) return;
+    setSimulationResult({ ...scenario, timestamp: new Date().toISOString() });
   };
 
   const handleTriggerBridgeTestScan = async () => {
@@ -359,15 +541,47 @@ export default function GateMonitor({ onNavigate = null, onOpenPairing = null, c
   const currentWarehouseObj = warehouses.find((w) => w.id === parseInt(selectedWarehouse, 10));
   const activeMismatch = lastPass?.mismatch_flag && !dismissedAlertIds.has(lastPass?.id);
 
+  // ── Rekomendasi #2: tick timeSinceUpdate setiap detik ─────────────────────
+  useEffect(() => {
+    if (!lastUpdatedAt) return;
+    const interval = setInterval(() => {
+      setTimeSinceUpdate(Math.floor((Date.now() - lastUpdatedAt) / 1000));
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [lastUpdatedAt]);
+
   return (
     <div className="space-y-4">
       {/* ── Toolbar ─────────────────────────────────────────────── */}
       <div className="flex flex-wrap items-center justify-between gap-2">
-        {/* Left: title + mode */}
+        {/* Left: title + live indicator */}
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2">
             <Radio className={`w-4 h-4 ${activeMismatch ? 'text-rose-500' : 'text-blue-500'} animate-pulse`} />
             <h1 className="text-lg font-bold text-slate-900">Monitor Gate RFID</h1>
+          </div>
+          {/* ── Rekomendasi #2: Animated Live Status Dot ────────── */}
+          <div className="flex items-center gap-1.5">
+            {streamConnected ? (
+              <span className="relative flex h-2.5 w-2.5">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500" />
+              </span>
+            ) : (
+              <span className="relative flex h-2.5 w-2.5">
+                <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-slate-300" />
+              </span>
+            )}
+            <span className={`text-[10px] font-semibold ${
+              streamConnected ? 'text-emerald-600' : 'text-slate-400'
+            }`}>
+              {streamConnected ? 'LIVE' : streamMode === 'CONNECTING' ? 'Connecting…' : 'Offline'}
+            </span>
+            {timeSinceUpdate != null && (
+              <span className="text-[10px] text-slate-400 font-mono">
+                · {timeSinceUpdate < 60 ? `${timeSinceUpdate}d` : `${Math.floor(timeSinceUpdate/60)}m`} lalu
+              </span>
+            )}
           </div>
           <span className={`text-[11px] font-bold px-2 py-0.5 rounded-lg border flex items-center gap-1.5 ${
             bridgeMode === 'GATE_SECURITY'
@@ -465,6 +679,26 @@ export default function GateMonitor({ onNavigate = null, onOpenPairing = null, c
         </div>
       </div>
 
+      {liveDecision && (
+        <div className={`border rounded-lg px-4 py-3 flex items-center justify-between gap-3 ${
+          liveDecision.unlock_gate
+            ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+            : liveDecision.status === 'STANDBY'
+              ? 'bg-amber-50 border-amber-200 text-amber-800'
+              : 'bg-rose-50 border-rose-200 text-rose-800'
+        }`}>
+          <div className="min-w-0">
+            <div className="text-xs font-bold">
+              {['OFFLINE_BUFFERED', 'AUTH_CONFIG_ERROR'].includes(liveDecision.status)
+                ? `Belum diterima server: ${liveDecision.status}`
+                : `Keputusan backend: ${liveDecision.status || (liveDecision.unlock_gate ? 'SUCCESS' : 'DENIED')}`}
+            </div>
+            <div className="text-[11px] opacity-80">{liveDecision.total_tags} tag · {liveDecision.direction} · {['OFFLINE_BUFFERED', 'AUTH_CONFIG_ERROR'].includes(liveDecision.status) ? 'menunggu koneksi dan rekonsiliasi' : 'menyinkronkan catatan tersimpan'}</div>
+          </div>
+          <span className="shrink-0 text-[10px] font-mono">{new Date(liveDecision.timestamp || liveDecision.received_at).toLocaleTimeString('id-ID')}</span>
+        </div>
+      )}
+
       {/* ── Anomaly Alert Banner ────────────────────────────────── */}
       {activeMismatch && (
         lastPass?.mismatch_details?.includes('MUATAN BELUM LENGKAP') ? (
@@ -561,12 +795,15 @@ export default function GateMonitor({ onNavigate = null, onOpenPairing = null, c
             <span className="font-medium">Live Telemetri Hardware</span>
             <span className="text-slate-600 text-[10px] font-mono">TCP:2022 / WS:2078</span>
           </div>
-          {liveTagDetection ? (
-            <div className="flex items-center gap-3 text-xs font-mono">
-              <span className="w-2 h-2 rounded-full bg-blue-400 animate-ping" />
-              <span className="text-blue-300 font-bold">{liveTagDetection.epc}</span>
-              <span className="text-slate-500">{liveTagDetection.rssi} dBm</span>
-              <span className="text-slate-600">{new Date(liveTagDetection.timestamp || Date.now()).toLocaleTimeString()}</span>
+          {liveTagDetections.length > 0 ? (
+            <div className="flex flex-wrap justify-end gap-x-3 gap-y-1 text-xs font-mono">
+              {liveTagDetections.slice(0, 4).map((tag) => (
+                <span key={`${tag.epc}:${tag.antenna}`} className="flex items-center gap-1.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-blue-400" />
+                  <span className="text-blue-300 font-bold">{tag.epc}</span>
+                  <span className="text-slate-500">{tag.count}x · {tag.rssi} dBm</span>
+                </span>
+              ))}
             </div>
           ) : (
             <span className="text-xs text-slate-600 italic">Menunggu pembacaan antena...</span>
@@ -576,7 +813,7 @@ export default function GateMonitor({ onNavigate = null, onOpenPairing = null, c
 
       {/* ── Simulasi ────────────────────────────────────────────── */}
       <div className="bg-white border border-slate-200 rounded-xl p-3 flex flex-wrap items-center gap-2">
-        <span className="text-xs font-semibold text-slate-500 mr-1">Simulasi:</span>
+        <span className="text-xs font-semibold text-slate-500 mr-1">Pratinjau Simulasi Lokal:</span>
         {[
           { id: 'VALID_PASS',       label: 'Lewat Sah',         color: 'bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100' },
           { id: 'UNAPPROVED_BREACH', label: 'Terobosan Ilegal', color: 'bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-100' },
@@ -586,13 +823,27 @@ export default function GateMonitor({ onNavigate = null, onOpenPairing = null, c
           <button
             key={id}
             onClick={() => handleSimulate(id)}
-            disabled={simulating}
-            className={`px-3 py-1.5 border rounded-lg text-xs font-semibold transition cursor-pointer disabled:opacity-50 ${color}`}
+            aria-pressed={simulationResult?.label === label}
+            className={`px-3 py-1.5 border rounded-lg text-xs font-semibold transition cursor-pointer ${color}`}
           >
-            {simulating ? '…' : label}
+            {label}
           </button>
         ))}
       </div>
+
+      {simulationResult && (
+        <div aria-live="polite" className={`border rounded-lg px-4 py-3 flex items-center justify-between gap-3 ${
+          simulationResult.mismatch
+            ? 'bg-rose-50 border-rose-200 text-rose-800'
+            : 'bg-emerald-50 border-emerald-200 text-emerald-800'
+        }`}>
+          <div className="min-w-0">
+            <div className="text-xs font-bold">{simulationResult.label} · {simulationResult.status} (simulasi)</div>
+            <div className="text-[11px] opacity-80">{simulationResult.totalTags} tag · {simulationResult.details} Tidak ditambahkan ke log operasional.</div>
+          </div>
+          <span className="shrink-0 text-[10px] font-mono">{new Date(simulationResult.timestamp).toLocaleTimeString('id-ID')}</span>
+        </div>
+      )}
 
       {/* ── Log Table ───────────────────────────────────────────── */}
       <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
@@ -633,46 +884,19 @@ export default function GateMonitor({ onNavigate = null, onOpenPairing = null, c
                   </td>
                 </tr>
               ) : (
-                events.map((evt) => (
-                  <tr key={evt.id} className={evt.mismatch_flag ? 'bg-rose-50/50' : 'hover:bg-slate-50 transition'}>
-                    <td className="px-4 py-2.5 text-slate-500 font-mono whitespace-nowrap">
-                      {new Date(evt.created_at).toLocaleTimeString('id-ID')}
-                    </td>
-                    <td className="px-4 py-2.5">
-                      <div className="font-semibold text-slate-800">{evt.gate_id}</div>
-                      <div className="text-[10px] text-slate-400">{evt.warehouse?.name}</div>
-                      {evt.shipping_document && (
-                        <div className="text-[10px] text-indigo-600 font-medium">
-                          #{evt.shipping_document.document_number}
-                        </div>
-                      )}
-                    </td>
-                    <td className="px-4 py-2.5 font-mono font-bold text-slate-700">{evt.direction}</td>
-                    <td className="px-4 py-2.5 font-mono font-bold text-slate-800">{evt.total_tags_detected}</td>
-                    <td className="px-4 py-2.5">
-                      <span className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-bold border ${
-                        evt.mismatch_flag
-                          ? 'bg-rose-100 text-rose-700 border-rose-200'
-                          : 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                      }`}>
-                        {evt.mismatch_flag ? 'Anomali' : 'Sesuai'}
-                      </span>
-                    </td>
-                    <td className="px-4 py-2.5 max-w-[220px]">
-                      {evt.mismatch_flag ? (
-                        <span className="text-rose-600 text-[11px] font-medium">{evt.mismatch_details}</span>
-                      ) : (
-                        <span className="text-slate-400">—</span>
-                      )}
-                    </td>
-                    <td className="px-4 py-2.5 text-center">
-                      <button onClick={() => handleDeleteSingle(evt.id)}
-                        className="p-1 text-slate-300 hover:text-rose-500 hover:bg-rose-50 rounded-lg transition cursor-pointer">
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </td>
-                  </tr>
-                ))
+                // ── Percepatan #3+#4: GateEventRow memo + virtual scroll ─────
+                <>
+                  {events.slice(0, visibleCount).map((evt) => (
+                    <GateEventRow key={evt.id} evt={evt} onDelete={handleDeleteSingle} />
+                  ))}
+                  {visibleCount < events.length && (
+                    <tr ref={sentinelRef}>
+                      <td colSpan={7} className="py-3 text-center text-[10px] text-slate-400">
+                        Memuat {events.length - visibleCount} event lagi…
+                      </td>
+                    </tr>
+                  )}
+                </>
               )}
             </tbody>
           </table>
@@ -702,7 +926,7 @@ export default function GateMonitor({ onNavigate = null, onOpenPairing = null, c
                 <FlameButton onClick={handleClearAll} disabled={deleting}
                   height={36} flameColor="rose" showArrow={false} text="">
                   <Trash2 className="w-3.5 h-3.5" />
-                  {deleting ? 'Membersihkan...' : 'Ya, Hapus Semua'}
+                  {deleting ? 'Membersihkan...' : 'Ya, Bersihkan Tampilan'}
                 </FlameButton>
               </div>
             </div>

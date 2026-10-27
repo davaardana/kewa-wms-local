@@ -14,10 +14,12 @@ class ShippingDocumentTag extends Model
         'tag_epc',
         'scanned_at',
         'status',
+        'length_dispatched',
     ];
 
     protected $casts = [
-        'scanned_at' => 'datetime',
+        'scanned_at'        => 'datetime',
+        'length_dispatched' => 'decimal:3',
     ];
 
     // --- Relationships ---

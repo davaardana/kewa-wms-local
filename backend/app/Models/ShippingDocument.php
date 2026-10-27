@@ -18,11 +18,14 @@ class ShippingDocument extends Model
         'warehouse_id',
         'notes',
         'attachments',
+        'archived_at',
+        'archived_by_user_id',
     ];
 
     protected $casts = [
         'approved_at' => 'datetime',
         'attachments' => 'array',
+        'archived_at' => 'datetime',
     ];
 
     // --- Relationships ---
@@ -50,6 +53,11 @@ class ShippingDocument extends Model
     public function tags(): HasMany
     {
         return $this->hasMany(ShippingDocumentTag::class);
+    }
+
+    public function audits(): HasMany
+    {
+        return $this->hasMany(ShippingDocumentAudit::class)->orderBy('created_at');
     }
 
     // --- Helpers ---

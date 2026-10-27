@@ -129,4 +129,5 @@ class StockReportTest extends TestCase
             ->assertJsonPath('movements.data.0.running_balance', 1)
             ->assertJsonPath('movements.data.1.running_balance', 2);
     }
+
 }

@@ -51,7 +51,10 @@ class MasterDataController extends Controller
     // Warehouses (Transient / Mobile Project Warehouses & Shared Hubs)
     public function getWarehouses(): JsonResponse
     {
-        return response()->json(Warehouse::with(['project', 'projects', 'pic', 'staff'])->get());
+        // #7: Warehouses jarang berubah — cache 5 menit di browser
+        return response()
+            ->json(Warehouse::with(['project', 'projects', 'pic', 'staff'])->get())
+            ->header('Cache-Control', 'private, max-age=300, stale-while-revalidate=60');
     }
 
     public function createWarehouse(Request $request): JsonResponse
@@ -161,7 +164,10 @@ class MasterDataController extends Controller
                 ->pluck('total', 'last_warehouse_id');
         });
 
-        return response()->json($items);
+        // #7: Items/katalog material — cache 2 menit di browser
+        return response()
+            ->json($items)
+            ->header('Cache-Control', 'private, max-age=120, stale-while-revalidate=30');
     }
 
     public function createItem(Request $request): JsonResponse

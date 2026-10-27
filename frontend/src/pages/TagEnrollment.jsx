@@ -1,7 +1,7 @@
 import { FlameButton } from '../components/ui/flame-button';
 import React, { useState, useEffect } from 'react';
 import { tagApi, masterApi, devicesApi } from '../services/api';
-import { openAuthenticatedEdgeSocket } from '../services/edgeWebSocket';
+import { openAuthenticatedEdgeSocket, openEnrollmentSseStream } from '../services/edgeWebSocket';
 import { normalizeEpc, normalizeEpcList } from '../services/rfidContract';
 import { showToast } from '../components/Toast';
 import { showConfirm } from '../components/ConfirmDialog';
@@ -9,8 +9,11 @@ import Portal from '../components/Portal';
 import { 
   Radio, Plus, Check, ShieldCheck, Search, Tag as TagIcon, Sparkles, 
   Package, Layers, Trash2, ListPlus, RefreshCw, HelpCircle, History, 
-  Eye, RotateCcw, Ban, CheckCircle2, X, AlertTriangle, ShieldAlert
+  Eye, RotateCcw, Ban, CheckCircle2, X, AlertTriangle, ShieldAlert,
+  ChevronLeft, ChevronRight
 } from 'lucide-react';
+
+const TAGS_PER_PAGE = 50;
 
 export default function TagEnrollment({ currentUser = null }) {
   // PM + SA can enroll, reserve, reactivate (matches BE: ['superadmin','pm'])
@@ -26,6 +29,8 @@ export default function TagEnrollment({ currentUser = null }) {
   const [loading, setLoading] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('all'); // 'all' | 'active' | 'decommissioned'
+  const [tagPage, setTagPage] = useState(1);
+  const [tagPagination, setTagPagination] = useState({ current_page: 1, last_page: 1, total: 0 });
 
   const [liveScannedTag, setLiveScannedTag] = useState(null);
   const [wsConnected, setWsConnected] = useState(false);
@@ -77,20 +82,48 @@ export default function TagEnrollment({ currentUser = null }) {
     return () => { cancelled = true; };
   }, [enrollForm.warehouse_id]);
 
-  // Listen to live RFID reader stream via WebSocket (Port 2078) with auto-reconnect
+  // Listen to live RFID reader stream — WS langsung ke edge (untuk LAN) + SSE fallback (untuk luar LAN)
   useEffect(() => {
     let ws = null;
     let reconnectTimer = null;
     let isUnmounted = false;
+    let closeSse = null; // SSE fallback closer
 
     const warehouseId = Number(enrollForm.warehouse_id);
     if (!warehouseId || !selectedReaderId) return undefined;
 
+    // Handler tag yang sama untuk WS maupun SSE
+    // SSE mengirim { epc, antenna, rssi, ... } langsung (tanpa wrapper type)
+    // WS mengirim { type: 'TAG_READ', epc, ... }
+    const handleTagRead = (data) => {
+      // Terima TAG_READ dari WS, atau objek langsung dari SSE (type === 'tag_read' atau tidak ada type)
+      const isTagEvent = !data.type || data.type === 'TAG_READ' || data.type === 'tag_read';
+      if (isTagEvent && data.epc) {
+        const cleanEpc = normalizeEpc(data.epc);
+        setLiveScannedTag({ epc: cleanEpc, rssi: data.rssi, antenna: data.antenna, timestamp: new Date().toLocaleTimeString() });
+        setEnrollForm((prev) => ({ ...prev, epc: cleanEpc }));
+        setZiplockEpcs((prev) => prev.includes(cleanEpc) ? prev : [...prev, cleanEpc]);
+      }
+    };
+
+    // SSE fallback — VPS relay, bekerja dari mana saja tanpa tergantung IP LAN edge
+    const startSseFallback = () => {
+      if (isUnmounted || closeSse) return;
+      console.log('[TagEnrollment] WS tidak bisa reach edge LAN — beralih ke SSE fallback via VPS');
+      setBridgeMode('ENROLLMENT');
+      setReaderError('');
+      setWsConnected(true); // SSE dianggap "connected" ke reader via VPS relay
+      closeSse = openEnrollmentSseStream(warehouseId, handleTagRead);
+    };
+
     const connectWs = async () => {
       if (isUnmounted) return;
+      // Flag: apakah WS berhasil di-auth setidaknya sekali di sesi ini
+      let wsEverAuthenticated = false;
       try {
         ws = await openAuthenticatedEdgeSocket(warehouseId, ['SET_MODE:ENROLLMENT'], {
           onAuthenticated: (socket) => {
+            wsEverAuthenticated = true;
             if (isUnmounted) socket.close();
             else {
               socket.send(JSON.stringify({ action: 'SET_MODE', mode: 'ENROLLMENT' }));
@@ -100,20 +133,30 @@ export default function TagEnrollment({ currentUser = null }) {
             }
           },
           onClose: () => {
-            if (!isUnmounted) {
-              setWsConnected(false);
+            if (isUnmounted) return;
+            setWsConnected(false);
+            if (wsEverAuthenticated) {
+              // WS pernah auth → edge LAN reachable, coba reconnect
               reconnectTimer = setTimeout(connectWs, 3000);
+            } else {
+              // WS tidak pernah auth → browser tidak bisa reach edge LAN IP
+              // Jangan retry WS — langsung aktifkan SSE via VPS
+              startSseFallback();
             }
           },
-          onError: () => { if (!isUnmounted) setWsConnected(false); },
+          onError: () => {
+            if (isUnmounted) return;
+            setWsConnected(false);
+            if (!wsEverAuthenticated) {
+              // Error sebelum auth → kemungkinan tidak bisa reach edge → SSE fallback
+              startSseFallback();
+            }
+          },
           onMessage: (data) => {
             if (data.type === 'MODE_CHANGED') {
               setBridgeMode(data.mode);
-            } else if (data.type === 'TAG_READ' && data.epc) {
-              const cleanEpc = normalizeEpc(data.epc);
-              setLiveScannedTag({ epc: cleanEpc, rssi: data.rssi, antenna: data.antenna, timestamp: new Date().toLocaleTimeString() });
-              setEnrollForm((prev) => ({ ...prev, epc: cleanEpc }));
-              setZiplockEpcs((prev) => prev.includes(cleanEpc) ? prev : [...prev, cleanEpc]);
+            } else {
+              handleTagRead(data);
             }
           },
         }, selectedReaderId);
@@ -122,12 +165,16 @@ export default function TagEnrollment({ currentUser = null }) {
       } catch (e) {
         if (!isUnmounted) {
           setWsConnected(false);
-          setReaderError(e.response?.data?.message || e.message || 'Reader gagal terhubung.');
-          // Don't retry on non-recoverable errors (no device, no permission, validation)
           const status = e?.response?.status;
           const isNonRecoverable = status === 404 || status === 403 || status === 422 || status === 409;
-          if (!isNonRecoverable) {
-            reconnectTimer = setTimeout(connectWs, 3000);
+
+          if (isNonRecoverable) {
+            // Kesalahan permanen (device tidak ada, tidak punya izin, dll) — tampilkan error
+            setReaderError(e.response?.data?.message || e.message || 'Reader gagal terhubung.');
+          } else {
+            // Kemungkinan network error (browser tidak bisa reach edge IP LAN) — fallback ke SSE
+            // SSE melalui VPS tidak butuh direct koneksi ke edge IP lokal
+            startSseFallback();
           }
         }
       }
@@ -138,21 +185,32 @@ export default function TagEnrollment({ currentUser = null }) {
     return () => {
       isUnmounted = true;
       if (reconnectTimer) clearTimeout(reconnectTimer);
-      if (ws) {
-        try { ws.close(); } catch (e) {}
-      }
+      if (ws) { try { ws.close(); } catch (e) {} }
+      if (closeSse) closeSse();
     };
   }, [enrollForm.warehouse_id, selectedReaderId]);
 
-  const loadData = async (showSpinner = true) => {
+  const loadData = async (showSpinner = true, page = tagPage) => {
     if (showSpinner) setLoading(true);
     try {
       const [tagRes, itemRes, whRes] = await Promise.all([
-        tagApi.getTags(),
+        tagApi.getTags({
+          page,
+          per_page: TAGS_PER_PAGE,
+          ...(searchTerm.trim() ? { search: searchTerm.trim() } : {}),
+          ...(statusFilter === 'active' ? { status_not: 'decommissioned' } : {}),
+          ...(statusFilter === 'decommissioned' ? { status: 'decommissioned' } : {}),
+        }),
         masterApi.getItems(),
         masterApi.getWarehouses(),
       ]);
       setTags(tagRes.data.data || tagRes.data);
+      setTagPagination({
+        current_page: tagRes.data.current_page || page,
+        last_page: tagRes.data.last_page || 1,
+        total: tagRes.data.total ?? tagRes.data.length ?? 0,
+      });
+      setTagPage(tagRes.data.current_page || page);
       setItems(itemRes.data);
       setWarehouses(whRes.data);
       if (itemRes.data.length > 0 && !enrollForm.item_id) {
@@ -173,6 +231,19 @@ export default function TagEnrollment({ currentUser = null }) {
   useEffect(() => {
     loadData();
   }, []);
+
+  const tagFiltersMountedRef = React.useRef(false);
+  useEffect(() => {
+    if (!tagFiltersMountedRef.current) {
+      tagFiltersMountedRef.current = true;
+      return undefined;
+    }
+    const timer = setTimeout(() => {
+      setTagPage(1);
+      loadData(false, 1);
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [searchTerm, statusFilter]);
 
   const generateMockEpc = () => {
     const hex = Math.floor(Math.random() * 0xffffff)
@@ -197,7 +268,10 @@ export default function TagEnrollment({ currentUser = null }) {
   };
 
   const handleAddBatchText = () => {
-    if (!batchTextInput.trim()) return;
+    if (!batchTextInput.trim()) {
+      showToast('Ketik atau paste EPC di kotak input terlebih dahulu, lalu klik + Tambah. Tag yang sudah terbaca reader otomatis masuk ke daftar.', 'info');
+      return;
+    }
     const extracted = normalizeEpcList(batchTextInput
       .split(/[\r\n,\s]+/)
     ).filter((e) => e.length >= 8);
@@ -207,9 +281,16 @@ export default function TagEnrollment({ currentUser = null }) {
       return;
     }
 
+    const before = ziplockEpcs.length;
     setZiplockEpcs((prev) => Array.from(new Set([...prev, ...extracted])));
     setBatchTextInput('');
-    showToast(`Ditambahkan ${extracted.length} EPC ke daftar kantong ziplock`, 'success');
+    const added = extracted.length;
+    const dupCount = extracted.filter((e) => ziplockEpcs.includes(e)).length;
+    if (dupCount > 0 && dupCount === added) {
+      showToast(`EPC sudah ada di daftar (${dupCount} duplikat diabaikan).`, 'warning');
+    } else {
+      showToast(`Ditambahkan ${added - dupCount} EPC ke daftar kantong ziplock${dupCount ? ` (${dupCount} duplikat diabaikan)` : ''}`, 'success');
+    }
   };
 
   const handleGenerate = async (e) => {
@@ -220,7 +301,8 @@ export default function TagEnrollment({ currentUser = null }) {
       setGeneratedTags(res.data.tags || []);
       setShowGenerateModal(false);
       showToast(res.data.message, 'success');
-      loadData(false);
+      setTagPage(1);
+      await loadData(false, 1);
     } catch (err) {
       showToast('Gagal generate EPC: ' + (err.response?.data?.message || err.message), 'error');
     } finally {
@@ -265,6 +347,7 @@ export default function TagEnrollment({ currentUser = null }) {
         const res = await tagApi.enrollTags(payload);
         showToast(`🎉 Sukses! ${res.data?.enrolled_count || ziplockEpcs.length} tag dalam kantong ziplock berhasil diaktifkan!`, 'success');
         setZiplockEpcs([]);
+        setLiveScannedTag(null); // Reset UI agar siap tampilkan tag berikutnya segera
       } else {
         if (!enrollForm.epc) {
           showToast('Nomor EPC tag wajib diisi!', 'warning');
@@ -275,6 +358,7 @@ export default function TagEnrollment({ currentUser = null }) {
         await tagApi.enrollTags(enrollForm);
         showToast('Tag RFID berhasil diaktifkan!', 'success');
         setEnrollForm((prev) => ({ ...prev, epc: '' }));
+        setLiveScannedTag(null); // Reset UI agar siap tampilkan tag berikutnya segera
       }
 
       loadData(false);
@@ -308,6 +392,32 @@ export default function TagEnrollment({ currentUser = null }) {
       loadData(false);
     } catch (err) {
       showToast('Gagal menonaktifkan tag: ' + (err.response?.data?.message || err.message), 'error');
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const handleHardDelete = async (epc) => {
+    if (!canDeleteTags) {
+      showToast('Akses Ditolak: Hanya Super Administrator yang dapat menghapus permanen tag RFID.', 'error');
+      return;
+    }
+    const confirmed = await showConfirm({
+      title: 'Hard Delete Tag RFID',
+      message: `Hapus record EPC [${epc}] dari registri? Ledger custody dan event gate historis tetap tersimpan. Tindakan ditolak jika tag masih memiliki stok/lokasi gudang atau dipakai dokumen aktif.`,
+      confirmText: 'Hapus Permanen',
+      type: 'danger',
+    });
+    if (!confirmed) return;
+    setDeleting(true);
+    try {
+      const res = await tagApi.hardDeleteTag(epc);
+      showToast(res.data?.message || `Tag ${epc} berhasil dihapus permanen.`, 'success');
+      setSelectedTags((prev) => prev.filter((selectedEpc) => selectedEpc !== epc));
+      setTags((prev) => prev.filter((tag) => tag.epc !== epc));
+      loadData(false);
+    } catch (err) {
+      showToast(err.response?.data?.message || 'Gagal menghapus permanen tag.', 'error');
     } finally {
       setDeleting(false);
     }
@@ -400,13 +510,6 @@ export default function TagEnrollment({ currentUser = null }) {
   };
 
   const filteredTags = tags.filter((t) => {
-    const matchesSearch =
-      t.epc.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (t.item?.name || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (t.warehouse?.name || '').toLowerCase().includes(searchTerm.toLowerCase());
-
-    if (!matchesSearch) return false;
-
     if (statusFilter === 'active') {
       return t.status !== 'decommissioned';
     } else if (statusFilter === 'decommissioned') {
@@ -577,7 +680,7 @@ export default function TagEnrollment({ currentUser = null }) {
                 <div className="flex gap-1.5">
                   <input
                     type="text"
-                    placeholder="Paste atau tembak EPC…"
+                    placeholder="Ketik / paste EPC manual di sini…"
                     value={batchTextInput}
                     onChange={(e) => setBatchTextInput(e.target.value)}
                     onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleAddBatchText(); } }}
@@ -588,6 +691,11 @@ export default function TagEnrollment({ currentUser = null }) {
                     + Tambah
                   </button>
                 </div>
+                {ziplockEpcs.length > 0 && (
+                  <p className="text-[10px] text-blue-600 font-medium">
+                    ✅ {ziplockEpcs.length} tag siap didaftarkan — klik <strong>Aktifkan {ziplockEpcs.length} Tag</strong> di bawah
+                  </p>
+                )}
               </div>
             ) : (
               /* Single Mode */
@@ -622,7 +730,7 @@ export default function TagEnrollment({ currentUser = null }) {
 
             <FlameButton
               type="submit"
-              disabled={submitting}
+              disabled={submitting || (enrollMode === 'ziplock' && ziplockEpcs.length === 0)}
               fullWidth
               height={40}
               flameColor={enrollMode === 'ziplock' ? 'blue' : 'blue'}
@@ -644,7 +752,7 @@ export default function TagEnrollment({ currentUser = null }) {
           <div className="p-3 border-b border-slate-100 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
             <div className="flex items-center gap-2.5 flex-wrap">
               <h2 className="text-xs font-bold text-slate-700 uppercase tracking-wide">
-                Daftar Tag RFID ({filteredTags.length})
+                Daftar Tag RFID ({tagPagination.total})
               </h2>
               {isSuperAdmin && selectedTags.length > 0 && (
                 <FlameButton type="button" onClick={handleBulkDisable} disabled={deleting}
@@ -658,9 +766,9 @@ export default function TagEnrollment({ currentUser = null }) {
               {/* Status filter chips */}
               <div className="flex gap-1 text-[11px] font-bold">
                 {[
-                  { id: 'all', label: `Semua (${tags.length})`, a: 'bg-slate-800 text-white', ia: 'bg-slate-100 text-slate-600' },
-                  { id: 'active', label: `Aktif (${tags.filter((t) => t.status !== 'decommissioned').length})`, a: 'bg-blue-600 text-white', ia: 'bg-blue-50 text-blue-700' },
-                  { id: 'decommissioned', label: `Nonaktif (${tags.filter((t) => t.status === 'decommissioned').length})`, a: 'bg-rose-600 text-white', ia: 'bg-rose-50 text-rose-700' },
+                  { id: 'all', label: 'Semua', a: 'bg-slate-800 text-white', ia: 'bg-slate-100 text-slate-600' },
+                  { id: 'active', label: 'Aktif', a: 'bg-blue-600 text-white', ia: 'bg-blue-50 text-blue-700' },
+                  { id: 'decommissioned', label: 'Nonaktif', a: 'bg-rose-600 text-white', ia: 'bg-rose-50 text-rose-700' },
                 ].map(({ id, label, a, ia }) => (
                   <button key={id} type="button" onClick={() => setStatusFilter(id)}
                     className={`px-2 py-1 rounded-lg transition cursor-pointer ${statusFilter === id ? a : ia}`}>
@@ -742,17 +850,23 @@ export default function TagEnrollment({ currentUser = null }) {
                               <History className="w-3.5 h-3.5" />
                             </button>
                             {isSuperAdmin && (
-                              isDecomm ? (
-                                <button type="button" title="Aktifkan Kembali" onClick={() => handleReactivate(t.epc)} disabled={deleting}
-                                  className="p-1 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded transition cursor-pointer">
-                                  <RotateCcw className="w-3.5 h-3.5" />
+                              <>
+                                {isDecomm ? (
+                                  <button type="button" title="Aktifkan Kembali" aria-label={`Aktifkan kembali tag ${t.epc}`} onClick={() => handleReactivate(t.epc)} disabled={deleting}
+                                    className="p-1 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded transition cursor-pointer disabled:opacity-50">
+                                    <RotateCcw className="w-3.5 h-3.5" />
+                                  </button>
+                                ) : (
+                                  <button type="button" title="Nonaktifkan" aria-label={`Nonaktifkan tag ${t.epc}`} onClick={() => handleDisableSingle(t.epc)} disabled={deleting}
+                                    className="p-1 text-slate-400 hover:text-amber-600 hover:bg-amber-50 rounded transition cursor-pointer disabled:opacity-50">
+                                    <Ban className="w-3.5 h-3.5" />
+                                  </button>
+                                )}
+                                <button type="button" title="Hard Delete Permanen" aria-label={`Hapus permanen tag ${t.epc}`} onClick={() => handleHardDelete(t.epc)} disabled={deleting}
+                                  className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded transition cursor-pointer disabled:opacity-50">
+                                  <Trash2 className="w-3.5 h-3.5" />
                                 </button>
-                              ) : (
-                                <button type="button" title="Nonaktifkan" onClick={() => handleDisableSingle(t.epc)} disabled={deleting}
-                                  className="p-1 text-slate-400 hover:text-amber-600 hover:bg-amber-50 rounded transition cursor-pointer">
-                                  <Ban className="w-3.5 h-3.5" />
-                                </button>
-                              )
+                              </>
                             )}
                           </div>
                         </td>
@@ -762,6 +876,20 @@ export default function TagEnrollment({ currentUser = null }) {
                 )}
               </tbody>
             </table>
+          </div>
+
+          <div className="flex items-center justify-between gap-3 border-t border-slate-100 px-3 py-2.5 text-xs text-slate-500">
+            <span>Halaman {tagPagination.current_page} dari {tagPagination.last_page} · {tagPagination.total} tag</span>
+            <div className="flex items-center gap-1">
+              <button type="button" onClick={() => loadData(true, tagPage - 1)} disabled={loading || tagPage <= 1}
+                aria-label="Halaman sebelumnya" className="rounded border border-slate-200 p-1.5 disabled:opacity-40">
+                <ChevronLeft className="h-3.5 w-3.5" />
+              </button>
+              <button type="button" onClick={() => loadData(true, tagPage + 1)} disabled={loading || tagPage >= tagPagination.last_page}
+                aria-label="Halaman berikutnya" className="rounded border border-slate-200 p-1.5 disabled:opacity-40">
+                <ChevronRight className="h-3.5 w-3.5" />
+              </button>
+            </div>
           </div>
         </div>
       </div>

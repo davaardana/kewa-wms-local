@@ -133,7 +133,7 @@ Sistem mendukung 2 mode operasional gerbang per gudang:
      * Mencatat bendera `mismatch_flag = true` beserta kronologi pelanggaran di database.
 2. **Rule-GATE-UNDERCOUNT (Muatan Bertahap, Akumulasi Multi-Pass & Penyelesaian Fisik Aktual):**
    * **Akumulasi Multi-Pass (Bawa Bertahap / 1 per 1):**  
-   Sistem menggabungkan EPC distinct dari event terdahulu yang diterima (`is_valid=true`) dengan batch saat ini. Event ditolak tidak pernah menjadi bukti kumulatif berikutnya.
+   Untuk Shipping Document, sistem menggabungkan EPC distinct dari event sukses dan `STANDBY` bersih (`mismatch_flag=false`) dengan batch saat ini. Event `DENIED`/mismatch tidak pernah menjadi bukti kumulatif berikutnya. `STANDBY` harus tetap terkunci dan belum memutasi progress/custody.
    * **Status Standby Sementara:**  
      Selama total akumulasi tag masih kurang dari kuantitas yang diajukan ($\sum \text{cumulative\_tags} < \text{requested\_qty}$), pintu gerbang berstatus `STANDBY` (Amber Notice) dan **TIDAK MEMICU SIRINE ALARM ANOMALI / PENCURIAN**.
    * **Partial Finalization Dinonaktifkan:**
@@ -150,6 +150,19 @@ Sistem mendukung 2 mode operasional gerbang per gudang:
    * Integrasi fisik kunci elektromagnetik (*Fail-Secure 5s auto-relock*) dan kamera CCTV snapshot dapat diimplementasikan sebagai ekstensi hardware sekunder setelah alur sensor dan notifikasi stabil.
 
 ---
+
+### E. Shipping Document RFID Gate (ENFORCED)
+
+* Arah dual antenna berasal dari urutan server: `A_TO_B=OUT`, `B_TO_A=IN`; tipe dokumen dan gudang harus cocok.
+* Seluruh `expected_qty` per item harus memiliki EPC assignment tepat. EPC yang melintas wajib merupakan EPC yang di-assign pada dokumen itu, bukan tag lain dengan item yang sama.
+* Outbound hanya dapat memakai tag `active` yang tercatat pada gudang asal. Inbound hanya dapat memakai tag `active` yang belum tercatat sebagai stok gudang.
+* Event denied/mismatch tidak memutasi progress maupun custody. Batch parsial bersih berstatus `STANDBY`, gate terkunci, dan EPC dapat diakumulasi; custody/progress diposting hanya ketika set lengkap lolos.
+* EPC assignment yang telah dipenuhi gate tidak dapat diposting ulang pada lintasan baru. Endpoint user `scan-tag` dan `batch-scan` tidak memutasi progress.
+* Outbound mencatat `GATE_OUT` saat set lengkap disetujui. Inbound mencatat `GATE_IN` saat gate menyetujui dan `STOCK_IN` satu kali per EPC saat PIC menyelesaikan dokumen; pada saat itu tag aktif di gudang tujuan.
+* Assignment jumlah kurang/lebih atau progress yang belum 100% mencegah penyelesaian dokumen.
+* Edit dokumen non-draft hanya boleh mengubah notes/attachments; type, warehouse, item, expected_qty, dan EPC adalah data operasional terkunci. Setiap update menyimpan snapshot append-only.
+* Aksi Hapus Superadmin melakukan soft archive, tidak hard-delete dokumen, tag, gate event, atau custody. Dokumen aktif dengan event gate/tag scanned tidak dapat diarsipkan; terminal docs tetap dapat dicari pada daftar arsip.
+* **Catat STOCK_IN inbound historis:** hanya PM/Superadmin melalui endpoint/UI; PIC ditolak. UI meminta konfirmasi fisik dan membuat reference audit otomatis dari dokumen, user, dan waktu; BA/surat jalan fisik menjadi bukti pendukung. Gate `IN` valid digunakan bila tersedia. Attestasi legacy boleh dipakai bila gate lama tidak merekam set lengkap valid, tetapi hanya untuk inbound `completed`, assignment tepat, seluruh EPC berstatus `scanned`, dan tag tetap `active` tanpa lokasi atau `attached` di gudang dokumen. Event baru mencatat aktor personal dan mode; attestasi legacy bukan klaim persetujuan gate. Ledger lama tidak diubah/dihapus; tag yang telah pindah gudang/status tak cocok tetap ditolak.
 
 ## 5. Matriks Keputusan Persetujuan Transaksi (Approval Matrix)
 
