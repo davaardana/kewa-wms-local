@@ -29,11 +29,11 @@ class Item extends Model
     protected function casts(): array
     {
         return [
-            'is_metal'          => 'boolean',
-            'is_reusable'       => 'boolean',
+            'is_metal' => 'boolean',
+            'is_reusable' => 'boolean',
             'is_serialized_tag' => 'boolean',
             'is_length_based'   => 'boolean',
-            'min_stock'         => 'integer',
+            'min_stock' => 'integer',
             'epc_suffix_digits' => 'integer',
             'epc_next_sequence' => 'integer',
         ];

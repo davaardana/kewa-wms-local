@@ -962,7 +962,14 @@ class GateBridgeApp {
       // ENROLLMENT relay: POST sighting ke VPS agar browser luar LAN bisa terima via SSE
       // Browser yang tidak bisa reach ws://LAN-IP:2078/ langsung akan terima via /api/enrollment/stream
       // Kirim selalu (tanpa cek operationalMode) — SSE endpoint di VPS yang filter berdasarkan warehouse
-      this.api.sendTagSighting(epc, antenna === 'B' ? 2 : 1, rssi).catch(() => {});
+      this.api.sendTagSighting(epc, antenna === 'B' ? 2 : 1, rssi).catch((err) => {
+        if (err?.response?.status) {
+          console.warn(`⚠️ [SIGHTING] POST /api/gate/sighting failed: HTTP ${err.response.status} — ${err.response.data?.message || err.message}`);
+        } else if (err?.code === 'ECONNREFUSED' || err?.code === 'ETIMEDOUT') {
+          console.warn(`⚠️ [SIGHTING] POST /api/gate/sighting network error: ${err.code}`);
+        }
+        // 429 atau error lain hanya di-log jika bukan timeout/connection error biasa
+      });
     } else if (_nowDedup - _lastBroadcast >= 200) {
       // TAG_SIGHTING: lighter rebroadcast within 200-dedupThreshold window for FE instant feedback
       this.broadcast({

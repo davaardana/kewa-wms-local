@@ -28,8 +28,8 @@ class RfidTag extends Model
     {
         return [
             'last_read_at'       => 'datetime',
-            'total_length_m'     => 'decimal:3',
-            'remaining_length_m' => 'decimal:3',
+            'total_length_m'     => 'float',
+            'remaining_length_m' => 'float',
         ];
     }
 
@@ -46,6 +46,11 @@ class RfidTag extends Model
     public function lastWarehouse(): BelongsTo
     {
         return $this->belongsTo(Warehouse::class, 'last_warehouse_id');
+    }
+
+    public function isLengthBased(): bool
+    {
+        return $this->remaining_length_m !== null;
     }
 
     public function custodyLogs(): HasMany

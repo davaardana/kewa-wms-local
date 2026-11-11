@@ -34,7 +34,7 @@ class GateEngineService
 
             $device = GateDevice::whereKey($authenticatedDevice->id)->lockForUpdate()->first();
 
-            // ΓöÇΓöÇ Idempotency: reject duplicate event IDs ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+            // ── Idempotency: reject duplicate event IDs ────────────────────────
             $eventId = $payload['event_id'] ?? (string) Str::uuid();
             $payload['observed_at'] = $payload['observed_at'] ?? Carbon::now()->toIso8601String();
 
@@ -55,7 +55,7 @@ class GateEngineService
                 ]);
             }
 
-            // ΓöÇΓöÇ Basic payload extraction ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+            // ── Basic payload extraction ───────────────────────────────────────
             $warehouseId   = (int) ($payload['warehouse_id'] ?? 0);
             $gateId        = $payload['gate_id'] ?? '';
             $warehouse     = Warehouse::find($warehouseId);
@@ -66,14 +66,14 @@ class GateEngineService
             $shippingDocId = $payload['shipping_document_id'] ?? null;
             $requestedDir  = $payload['direction'] ?? null;
 
-            // ΓöÇΓöÇ Device binding validation ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+            // ── Device binding validation ──────────────────────────────────────
             if (!$device || !$device->is_active
                 || (int) $device->warehouse_id !== $warehouseId
                 || $device->device_code !== $gateId) {
                 throw new \DomainException('Authenticated device, warehouse, and gate binding mismatch.');
             }
 
-            // ΓöÇΓöÇ Enrollment workstation: mute gate evaluation ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+            // ── Enrollment workstation: mute gate evaluation ───────────────────
             if ($device->device_role === 'enrollment_desktop'
                 || ($payload['operational_mode'] ?? '') === 'ENROLLMENT') {
                 return [
@@ -89,17 +89,17 @@ class GateEngineService
                 ];
             }
 
-            // ΓöÇΓöÇ #3a: Determine direction ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+            // ── #3a: Determine direction ───────────────────────────────────────
             $direction = $this->resolveDirection($gateMode, $antennaSeq, $requestedDir);
 
-            // ΓöÇΓöÇ #3b: Resolve matching ShippingDocument ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+            // ── #3b: Resolve matching ShippingDocument ─────────────────────────
             [$shippingDoc, $direction] = $this->resolveShippingDocument(
                 $shippingDocId, $warehouseId, $direction, $epcList
             );
 
             $docTypeForDirection = $direction === 'OUT' ? 'outbound' : ($direction === 'IN' ? 'inbound' : null);
 
-            // ΓöÇΓöÇ #3c: Load and evaluate EPCs ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+            // ── #3c: Load and evaluate EPCs ────────────────────────────────────
             $tags = RfidTag::with('item')
                 ->whereIn('epc', $epcList)
                 ->orderBy('id')
@@ -107,12 +107,12 @@ class GateEngineService
                 ->get()
                 ->keyBy('epc');
 
-            // ΓöÇΓöÇ #3d: Evaluate mismatch ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+            // ── #3d: Evaluate mismatch ─────────────────────────────────────────
             [$mismatch, $mismatchDetails, $unlockGate, $statusMessage, $isUnderCount,
              $allCumulativeEpcs, $cumulativeItemCounts, $hasCriticalMismatch, $assignedEpcs]
                 = $this->evaluateEpcMismatch($shippingDoc, $epcList, $tags, $direction, $warehouseId);
 
-            // ΓöÇΓöÇ Build decision ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+            // ── Build decision ────────────────────────────────────────────────
             $decisionResult = [
                 'unlock_gate'              => $unlockGate,
                 'direction'                => $direction,
@@ -133,7 +133,7 @@ class GateEngineService
                 ],
             ];
 
-            // ΓöÇΓöÇ Persist GatePassEvent ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+            // ── Persist GatePassEvent ─────────────────────────────────────────
             $passEvent = GatePassEvent::create([
                 'gate_device_id'       => $device->id,
                 'event_id'             => $eventId,
@@ -156,7 +156,7 @@ class GateEngineService
                 'decision_result_json' => $decisionResult,
             ]);
 
-            // ΓöÇΓöÇ #3e: On approved ΓÇö record custody & update document ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+            // ── #3e: On approved — record custody & update document ───────────
             if ($unlockGate && $shippingDoc) {
                 $allCumulativeTags = RfidTag::with('item')
                     ->whereIn('epc', $allCumulativeEpcs)
@@ -172,7 +172,7 @@ class GateEngineService
         });
     }
 
-    // ΓöÇΓöÇ #3a: Direction resolution ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+    // ── #3a: Direction resolution ──────────────────────────────────────────────
     private function resolveDirection(string $gateMode, string $antennaSeq, ?string $requestedDir): ?string
     {
         return match ($gateMode) {
@@ -182,7 +182,7 @@ class GateEngineService
         };
     }
 
-    // ΓöÇΓöÇ #3b: Resolve the best matching ShippingDocument ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+    // ── #3b: Resolve the best matching ShippingDocument ───────────────────────
     /**
      * @return array{ShippingDocument|null, string|null} [$shippingDoc, $direction]
      */
@@ -209,10 +209,10 @@ class GateEngineService
 
         $edgeSelectedDocument = $shippingDoc;
 
-        // Draft tidak punya pre-assigned tags -- jangan null berdasarkan tag match
-        if ($shippingDoc && $shippingDoc->status !== 'draft'
-            && !$shippingDoc->tags->contains(fn ($tag) => in_array($tag->tag_epc, $epcList, true))
-        ) {
+        // Edge config may be stale — re-resolve by scanned EPCs if needed
+        if ($shippingDoc && !$shippingDoc->tags->contains(
+            fn ($tag) => in_array($tag->tag_epc, $epcList, true)
+        )) {
             $shippingDoc = null;
         }
 
@@ -220,9 +220,7 @@ class GateEngineService
             $matchingDocuments = ShippingDocument::with(['tags.rfidTag.item', 'items.item'])
                 ->where('warehouse_id', $warehouseId)
                 ->whereIn('status', ['draft', 'approved', 'in_progress'])
-                ->whereHas('items', fn ($q) => $q->whereHas('item', fn ($qi) => $qi->whereIn(
-                    'id', \App\Models\RfidTag::whereIn('epc', $epcList)->pluck('item_id')->unique()->all()
-                )))
+                ->whereHas('tags', fn ($q) => $q->whereIn('tag_epc', $epcList))
                 ->lockForUpdate()
                 ->get();
 
@@ -233,46 +231,6 @@ class GateEngineService
 
             if ($matchingDocuments->count() === 1) {
                 $shippingDoc = $matchingDocuments->first();
-            } elseif ($matchingDocuments->count() > 1) {
-                // Ambiguitas: >1 dokumen cocok berdasarkan item_id.
-                // Cek apakah setiap EPC hanya cocok ke SATU dokumen (bukan tersebar).
-                // Jika setiap EPC punya satu dokumen unik → pilih dokumen dengan overlap terbanyak.
-                // Jika EPC tersebar ke dokumen berbeda (tiap dok punya EPC eksklusif sendiri)
-                // → benar-benar ambiguous, kembalikan null agar gate fail-closed.
-                $docPerEpc = [];
-                foreach ($epcList as $epc) {
-                    foreach ($matchingDocuments as $doc) {
-                        if ($doc->tags->contains(fn ($t) => $t->tag_epc === $epc)) {
-                            $docPerEpc[$epc][] = $doc->id;
-                        }
-                    }
-                }
-                // Kumpulkan dokumen yang punya setidaknya 1 EPC eksklusif (tidak ada di dok lain)
-                $docsWithExclusiveEpc = collect();
-                foreach ($matchingDocuments as $doc) {
-                    foreach ($epcList as $epc) {
-                        $matchingDocIds = $docPerEpc[$epc] ?? [];
-                        if (in_array($doc->id, $matchingDocIds, true) && count($matchingDocIds) === 1) {
-                            $docsWithExclusiveEpc[$doc->id] = $doc;
-                            break;
-                        }
-                    }
-                }
-                if ($docsWithExclusiveEpc->count() === 1) {
-                    // Hanya satu dokumen yang punya EPC eksklusif → pilih itu
-                    $shippingDoc = $docsWithExclusiveEpc->first();
-                } elseif ($docsWithExclusiveEpc->count() > 1) {
-                    // EPC tersebar ke beberapa dokumen berbeda → benar-benar ambiguous → null
-                    $shippingDoc = null;
-                } else {
-                    // Semua EPC dibagi bersama → pilih yang overlap terbanyak
-                    $shippingDoc = $matchingDocuments->sortByDesc(function ($doc) use ($epcList) {
-                        $docEpcs  = $doc->tags->pluck('tag_epc')->all();
-                        $overlap  = count(array_intersect($epcList, $docEpcs));
-                        $priority = $doc->status === 'in_progress' ? 1 : 0;
-                        return $overlap * 10 + $priority;
-                    })->first();
-                }
             }
         }
 
@@ -288,7 +246,7 @@ class GateEngineService
         return [$shippingDoc, $direction];
     }
 
-    // ΓöÇΓöÇ #3c: Full EPC mismatch evaluation ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+    // ── #3c: Full EPC mismatch evaluation ────────────────────────────────────
     /**
      * Returns [mismatch, mismatchDetails[], unlockGate, statusMessage,
      *          isUnderCount, allCumulativeEpcs[], cumulativeItemCounts[],
@@ -340,59 +298,42 @@ class GateEngineService
             }
         }
 
-        // v2: draft tidak punya pre-assigned tags
-        $isDraft = $shippingDoc->status === 'draft';
-
         $assignedTags  = $shippingDoc->tags->keyBy('tag_epc');
         $assignedEpcs  = $assignedTags->keys()->all();
         $expectedItems = $shippingDoc->items->mapWithKeys(fn ($i) => [$i->item_id => (int) $i->expected_qty]);
+        $assignedItemCounts = $shippingDoc->items->mapWithKeys(fn ($item) => [
+            $item->item_id => $assignedTags->filter(fn ($tag) => (int) $tag->shipping_document_item_id === (int) $item->id)->count(),
+        ]);
 
-        if (!$isDraft) {
-            $assignedItemCounts = $shippingDoc->items->mapWithKeys(fn ($item) => [
-                $item->item_id => $assignedTags->filter(fn ($tag) => (int) $tag->shipping_document_item_id === (int) $item->id)->count(),
-            ]);
-            foreach ($expectedItems as $itemId => $requiredQty) {
-                $assignedQty = $assignedItemCounts->get($itemId, 0);
-                if ($assignedQty !== $requiredQty) {
-                    $mismatch = true;
-                    $mismatchDetails[] = "Jumlah tag ter-assign untuk item #{$itemId} adalah {$assignedQty}/{$requiredQty}; lengkapi assignment sebelum gate.";
-                }
+        foreach ($expectedItems as $itemId => $requiredQty) {
+            $assignedQty = $assignedItemCounts->get($itemId, 0);
+            if ($assignedQty !== $requiredQty) {
+                $mismatch = true;
+                $mismatchDetails[] = "Jumlah tag ter-assign untuk item #{$itemId} adalah {$assignedQty}/{$requiredQty}; lengkapi assignment sebelum gate.";
             }
         }
 
         foreach ($epcList as $epc) {
-            if (!$isDraft && !$assignedTags->has($epc)) {
+            if (!$assignedTags->has($epc)) {
                 $mismatch = true;
                 $mismatchDetails[] = "Tag EPC '{$epc}' tidak di-assign ke dokumen #{$shippingDoc->document_number}.";
                 continue;
             }
             $tagModel = $tags->get($epc);
             if ($tagModel && $direction === 'OUT') {
-                // Partial drum (length-based): tag boleh exit selama is_length_based=true
-                // dan remaining_length_m > 0, meskipun status masih 'attached' di gudang.
-                $isLengthBasedTag = $tagModel->item?->is_length_based
-                    && $tagModel->remaining_length_m !== null
-                    && (float) $tagModel->remaining_length_m > 0.0;
-                $tagInCorrectWarehouse = $tagModel->status === 'attached'
-                    && (int) $tagModel->last_warehouse_id === $warehouseId;
-                if (!$tagInCorrectWarehouse && !$isLengthBasedTag) {
-                    $mismatch = true;
-                    $mismatchDetails[] = "Tag EPC '{$epc}' tidak berstatus stok aktif di gudang asal dokumen.";
-                } elseif ($isLengthBasedTag && (int) $tagModel->last_warehouse_id !== $warehouseId) {
-                    $mismatch = true;
-                    $mismatchDetails[] = "Tag EPC '{$epc}' (drum kabel) tercatat di gudang berbeda.";
+                $ilb = $tagModel->item?->is_length_based ?? false;
+                $icw = (int) $tagModel->last_warehouse_id === $warehouseId;
+                if ($ilb) {
+                    if ($tagModel->status !== 'attached' || !$icw) { $mismatch=true; $mismatchDetails[]="Tag '{$epc}' drum tidak di gudang ini (status:{$tagModel->status})."; }
+                    elseif (($tagModel->remaining_length_m ?? 0) <= 0) { $mismatch=true; $mismatchDetails[]="Tag '{$epc}' drum habis (remaining=0)."; }
+                } else {
+                    if ($tagModel->status !== 'attached' || !$icw) { $mismatch=true; $mismatchDetails[]="Tag EPC '{$epc}' tidak berstatus stok di gudang asal dokumen (status: {$tagModel->status})."; }
                 }
             }
-            // Untuk INBOUND: tag harus active.
-            // Pada draft (auto-assign), last_warehouse_id tidak divalidasi ketat karena
-            // tag bisa re-enter gudang dari sumber lain (vendor, transfer, retur).
-            if ($tagModel && $direction === 'IN' && $tagModel->status !== 'active') {
+            if ($tagModel && $direction === 'IN'
+                && ($tagModel->status !== 'active' || $tagModel->last_warehouse_id !== null)) {
                 $mismatch = true;
-                $mismatchDetails[] = "Tag EPC '{$epc}' tidak berstatus aktif, tidak dapat diproses masuk.";
-            }
-            if ($tagModel && $direction === 'IN' && !$isDraft && $tagModel->last_warehouse_id !== null) {
-                $mismatch = true;
-                $mismatchDetails[] = "Tag EPC '{$epc}' bukan tag aktif yang belum tercatat sebagai stok gudang.";
+                $mismatchDetails[] = "Tag EPC '{$epc}' tidak valid untuk penerimaan (status: {$tagModel->status}, warehouse: {$tagModel->last_warehouse_id}).";
             }
         }
 
@@ -411,16 +352,10 @@ class GateEngineService
 
         $allCumulativeEpcs = array_values(array_unique(array_merge($previousEpcs, $epcList)));
 
-        // Draft: scan bertahap diizinkan, hanya block non-draft yang sudah selesai
         $alreadyScannedEpcs = $shippingDoc->tags->where('status', 'scanned')->pluck('tag_epc')->all();
-        // Hanya tolak jika ada EPC dari batch SEKARANG yang sudah pernah di-scan di lintasan sebelumnya
-        // (mencegah double-scan per EPC). Jangan block scan bertahap untuk EPC yang belum pernah masuk.
-        if (!$isDraft && $alreadyScannedEpcs) {
-            $duplicateEpcs = array_intersect($epcList, $alreadyScannedEpcs);
-            if (!empty($duplicateEpcs)) {
-                $mismatch = true;
-                $mismatchDetails[] = 'EPC sudah disahkan di lintasan sebelumnya (double-scan dicegah): ' . implode(', ', $duplicateEpcs);
-            }
+        if ($alreadyScannedEpcs) {
+            $mismatch = true;
+            $mismatchDetails[] = 'Dokumen sudah memiliki tag yang disahkan gate; lintasan ulang ditolak untuk mencegah pencatatan ganda.';
         }
 
         $allCumulativeTags = RfidTag::with('item')
@@ -430,47 +365,20 @@ class GateEngineService
             ->get()
             ->keyBy('epc');
 
-        // Draft: auto-assign tag yang terbaca ke document items berdasarkan item_id
-        if ($isDraft) {
-            $docItems = $shippingDoc->items->keyBy('item_id');
-            $autoAssignedEpcs = $shippingDoc->tags->pluck('tag_epc')->flip();
-            foreach ($allCumulativeEpcs as $epc) {
-                if ($autoAssignedEpcs->has($epc)) continue;
-                $rfidTag = $allCumulativeTags->get($epc);
-                if (!$rfidTag) continue;
-                $docItem = $docItems->get($rfidTag->item_id);
-                if (!$docItem) continue;
-                $alreadyQty = $shippingDoc->tags->where('shipping_document_item_id', $docItem->id)->count();
-                if ($alreadyQty >= $docItem->expected_qty) continue;
-                \App\Models\ShippingDocumentTag::firstOrCreate(
-                    ['shipping_document_id' => $shippingDoc->id, 'tag_epc' => $epc],
-                    ['shipping_document_item_id' => $docItem->id, 'rfid_tag_id' => $rfidTag->id, 'status' => 'expected']
-                );
-                $autoAssignedEpcs->put($epc, true);
-            }
-            $shippingDoc->unsetRelation('tags')->load('tags');
-            $assignedTags = $shippingDoc->tags->keyBy('tag_epc');
-            $assignedEpcs = $assignedTags->keys()->all();
-        }
-
         foreach ($allCumulativeEpcs as $epc) {
             $cumulativeTag = $allCumulativeTags->get($epc);
             if (!$assignedTags->has($epc) || !$cumulativeTag) {
-                if ($isDraft) { $mismatchDetails[] = "Tag '{$epc}' tidak cocok item dokumen."; }
-                else { $mismatch = true; $mismatchDetails[] = "EPC kumulatif '{$epc}' bukan assignment valid dokumen."; }
+                $mismatch = true;
+                $mismatchDetails[] = "EPC kumulatif '{$epc}' bukan assignment valid dokumen.";
                 continue;
             }
-            // Untuk INBOUND draft: hanya cek status=active, last_warehouse_id boleh apa saja
-            // (barang bisa re-enter gudang dari sumber lain — vendor, retur, transfer)
+            $ilbc = $cumulativeTag->item?->is_length_based ?? false;
             if ($direction === 'OUT') {
-                // OUTBOUND: barang harus berstatus 'attached' (ada di gudang) dan di warehouse yang sama
-                $expectedLocation = $cumulativeTag->status === 'attached'
-                    && (int) $cumulativeTag->last_warehouse_id === $warehouseId;
+                $expectedLocation = $ilbc
+                    ? ($cumulativeTag->status==='attached' && (int)$cumulativeTag->last_warehouse_id===$warehouseId && ($cumulativeTag->remaining_length_m??0)>0)
+                    : ($cumulativeTag->status==='attached' && (int)$cumulativeTag->last_warehouse_id===$warehouseId);
             } else {
-                // IN: untuk non-draft, last_warehouse_id harus null (barang belum masuk gudang manapun)
-                // Untuk draft (auto-assign), cukup tag harus active
-                $expectedLocation = $cumulativeTag->status === 'active'
-                    && ($isDraft || $cumulativeTag->last_warehouse_id === null);
+                $expectedLocation = $cumulativeTag->status==='active' && $cumulativeTag->last_warehouse_id===null;
             }
             if (!$expectedLocation) {
                 $mismatch = true;
@@ -495,12 +403,12 @@ class GateEngineService
             if ($docQty === 0) {
                 $mismatch = true;
                 $hasCriticalMismatch = true;
-                $mismatchDetails[] = "≡ƒÜ¿ BARANG TIDAK ADA DI DOKUMEN: '{$itemName}' ({$qty} unit) tidak tercantum dalam Shipping Document #{$shippingDoc->document_number}!";
+                $mismatchDetails[] = "🚨 BARANG TIDAK ADA DI DOKUMEN: '{$itemName}' ({$qty} unit) tidak tercantum dalam Shipping Document #{$shippingDoc->document_number}!";
             } elseif ($qty > $docQty) {
                 $mismatch = true;
                 $hasCriticalMismatch = true;
                 $selisih = $qty - $docQty;
-                $mismatchDetails[] = "≡ƒÜ¿ KELEBIHAN: '{$itemName}' terdeteksi {$qty} unit, izin dokumen hanya {$docQty} unit (+{$selisih}).";
+                $mismatchDetails[] = "🚨 KELEBIHAN: '{$itemName}' terdeteksi {$qty} unit, izin dokumen hanya {$docQty} unit (+{$selisih}).";
             }
         }
 
@@ -513,7 +421,7 @@ class GateEngineService
                 $firstTag  = $allCumulativeTags->first(fn ($t) => $t->item_id == $itemId);
                 $itemName  = $firstTag?->item?->name ?? "Material #{$itemId}";
                 $selisih   = $requiredQty - $cumulativeQty;
-                $mismatchDetails[] = "ΓÜá∩╕Å BELUM LENGKAP '{$itemName}': terbaca {$cumulativeQty}/{$requiredQty} (kurang {$selisih} tag). Menunggu sisa.";
+                $mismatchDetails[] = "⚠️ BELUM LENGKAP '{$itemName}': terbaca {$cumulativeQty}/{$requiredQty} (kurang {$selisih} tag). Menunggu sisa.";
             }
         }
 
@@ -532,7 +440,7 @@ class GateEngineService
                 $hasCriticalMismatch, $assignedEpcs];
     }
 
-    // ΓöÇΓöÇ #3d: Record custody events & update document/tag state ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+    // ── #3d: Record custody events & update document/tag state ────────────────
     private function recordGateCustody(
         ShippingDocument $shippingDoc,
         array $allCumulativeEpcs,
@@ -547,67 +455,50 @@ class GateEngineService
         foreach ($allCumulativeEpcs as $epc) {
             if (!$allCumulativeTags->has($epc)) continue;
 
-            $tagModel = $allCumulativeTags->get($epc);
+            $tagModel    = $allCumulativeTags->get($epc);
+            $documentTag = $shippingDoc->tags->firstWhere('tag_epc', $epc);
 
-            // Deteksi partial drum (length-based): is_length_based=true AND remaining_length_m set
-            $isLengthBased = $tagModel->item?->is_length_based
-                && $tagModel->remaining_length_m !== null;
+            // Drum/kabel partial OUT: cek sebelum custody umum
+            if ($direction === 'OUT' && ($tagModel->item?->is_length_based ?? false) && $documentTag) {
+                $dispatched   = (float) ($documentTag->length_dispatched ?? 0);
+                $remainingNow = (float) ($tagModel->remaining_length_m ?? 0);
 
-            if ($direction === 'OUT' && $isLengthBased) {
-                $docTag     = $shippingDoc->tags->firstWhere('tag_epc', $epc);
-                $dispatched = (float) ($docTag?->length_dispatched ?? 0);
-                if ($dispatched <= 0) continue;
-
-                $currentRemaining = (float) $tagModel->remaining_length_m;
-                $newRemaining     = max(0.0, $currentRemaining - $dispatched);
-                $isLastPull       = $newRemaining <= 0.0;
-
-                $tagModel->update(['remaining_length_m' => $newRemaining]);
-
-                $custodyAction = $isLastPull ? 'GATE_OUT' : 'PARTIAL_OUT';
+                $remainingNew = max(0.0, $remainingNow - $dispatched);
+                if ($remainingNew > 0) {
+                    $tagModel->update(['remaining_length_m' => $remainingNew]);
+                    $pa = 'PARTIAL_OUT';
+                } else {
+                    $tagModel->update(['status' => 'active', 'last_warehouse_id' => null, 'remaining_length_m' => 0]);
+                    $pa = 'GATE_OUT';
+                }
                 $this->custodyService->recordEvent(
-                    itemId:        $tagModel->item_id,
-                    holderUserId:  $holderUserId,
-                    action:        $custodyAction,
-                    tagEpc:        $epc,
-                    refType:       ShippingDocument::class,
-                    refId:         $shippingDoc->id,
-                    warehouseId:   $warehouseId,
-                    photoUrl:      $cctvSnapshot,
-                    notes:         "Gate OUT via {$gateId} - Dokumen #{$shippingDoc->document_number}"
-                        . " - Dispatched:{$dispatched}m Remaining:{$newRemaining}m",
-                    quantityValue: $dispatched,
+                    itemId: $tagModel->item_id, holderUserId: $holderUserId,
+                    action: $pa, tagEpc: $epc,
+                    refType: ShippingDocument::class, refId: $shippingDoc->id,
+                    warehouseId: $warehouseId, photoUrl: $cctvSnapshot,
+                    notes: "[{$dispatched}m] Gate OUT via {$gateId} - Dok #{$shippingDoc->document_number}",
+                    quantityValue: $dispatched
                 );
-                if ($docTag && $docTag->status === 'expected') {
-                    $docTag->update(['status' => 'scanned', 'scanned_at' => now()]);
-                    $docTag->documentItem?->increment('scanned_qty');
+                if ($documentTag->status === 'expected') {
+                    $documentTag->update(['status' => 'scanned', 'scanned_at' => now()]);
+                    $documentTag->documentItem->increment('scanned_qty');
                 }
-                if ($isLastPull) {
-                    $tagModel->update(['status' => 'active', 'last_warehouse_id' => null]);
-                }
-                continue; // partial: tag tetap attached di warehouse
+                continue;
             }
 
-            // Flow normal (non-length-based)
+            // Alur umum IN/OUT
             $action = ($direction === 'OUT') ? 'GATE_OUT' : 'GATE_IN';
             $this->custodyService->recordEvent(
-                itemId:       $tagModel->item_id,
-                holderUserId: $holderUserId,
-                action:       $action,
-                tagEpc:       $epc,
-                refType:      ShippingDocument::class,
-                refId:        $shippingDoc->id,
-                warehouseId:  $warehouseId,
-                photoUrl:     $cctvSnapshot,
-                notes:        "Gate {$direction} via {$gateId} - Dokumen #{$shippingDoc->document_number}"
+                itemId: $tagModel->item_id, holderUserId: $holderUserId,
+                action: $action, tagEpc: $epc,
+                refType: ShippingDocument::class, refId: $shippingDoc->id,
+                warehouseId: $warehouseId, photoUrl: $cctvSnapshot,
+                notes: "Gate {$direction} via {$gateId} - Dok #{$shippingDoc->document_number}"
             );
-
-            $documentTag = $shippingDoc->tags->firstWhere('tag_epc', $epc);
             if ($documentTag && $documentTag->status === 'expected') {
                 $documentTag->update(['status' => 'scanned', 'scanned_at' => now()]);
-                $documentTag->documentItem?->increment('scanned_qty');
+                $documentTag->documentItem->increment('scanned_qty');
             }
-
             if ($direction === 'IN') {
                 $tagModel->update(['status' => 'attached', 'last_warehouse_id' => $warehouseId]);
             } elseif ($direction === 'OUT') {
@@ -615,31 +506,7 @@ class GateEngineService
             }
         }
 
-        // v2: auto-assign tags ke shipping_document_tags untuk dokumen draft
-        if ($shippingDoc->status === 'draft') {
-            $docItems = $shippingDoc->items->keyBy('item_id');
-            foreach ($allCumulativeEpcs as $epc) {
-                if (!$allCumulativeTags->has($epc)) continue;
-                $tagModel = $allCumulativeTags->get($epc);
-                $itemId   = $tagModel->item_id;
-                if (!$docItems->has($itemId)) continue;
-                $docItem = $docItems->get($itemId);
-                $alreadyAssigned = \App\Models\ShippingDocumentTag::where('shipping_document_id', $shippingDoc->id)
-                    ->where('tag_epc', $epc)->exists();
-                if ($alreadyAssigned) continue;
-                \App\Models\ShippingDocumentTag::create([
-                    'shipping_document_id'      => $shippingDoc->id,
-                    'shipping_document_item_id' => $docItem->id,
-                    'rfid_tag_id'               => $tagModel->id,
-                    'tag_epc'                   => $epc,
-                    'status'                    => 'scanned',
-                    'scanned_at'                => now(),
-                ]);
-                $docItem->increment('scanned_qty');
-            }
-        }
-
-        if (in_array($shippingDoc->status, ['draft', 'approved'], true)) {
+        if (in_array($shippingDoc->status, ['draft', 'approved'])) {
             $shippingDoc->update(['status' => 'in_progress']);
         }
     }

@@ -1,7 +1,8 @@
-// MOSA WMS RFID — Service Worker v2.0
+// MOSA WMS RFID — Service Worker v2.2
 // Percepatan #8: Cache-First untuk Vite hashed assets, Stale-While-Revalidate untuk navigasi
-const CACHE_NAME = 'mosa-wms-v2.0';
-const ASSETS_CACHE = 'mosa-assets-v2.0'; // immutable Vite chunks — separate cache
+// v2.2: force-clear cache lama agar AssignTagsModal fix (flicker+stale state) langsung aktif
+const CACHE_NAME = 'mosa-wms-v2.2';
+const ASSETS_CACHE = 'mosa-assets-v2.2'; // immutable Vite chunks — separate cache
 const OFFLINE_PAGE = '/offline.html';
 
 const PRECACHE_ASSETS = [

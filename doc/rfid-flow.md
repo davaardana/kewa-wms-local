@@ -1,14 +1,22 @@
 ﻿# RFID Flow — Mosaik WMS
 VPS: `dava@206.237.98.48 -p 2210` | RFID Reader (LAN gudang): `192.168.2.200:2022` | Edge Bridge: PC lokal gudang
 
-> **Known VPS State (Oktober 2026):**
-> - DB: 1 gate device `GATE-01` (`warehouse_id=1`, `edge_ws_url=ws://192.168.1.106:2078/`)
-> - Tag terdaftar: 1 EPC `E28069150000402D4160D5F2`
-> - `CACHE_STORE=file` | `QUEUE_CONNECTION=database` | Queue: `broadcasts,default`
-> - Tidak ada service Redis di `docker-compose.yml` — `REDIS_HOST=127.0.0.1` di `.env` tidak aktif
+> **Known VPS State (Oktober 2026 — update 30 Oct):**
+> - DB: 1 gate device `GATE-01` (`warehouse_id=1`, `edge_ws_url=ws://192.168.9.254:2078/`) — IP PC lokal 192.168.9.254 ✅
+> - Tag terdaftar: **2 EPC** — E28069150000402D4160D5F2, E28069150000402D4160B9F2 — keduanya status=active, last_warehouse_id=null
+> - `CACHE_STORE=database` (PostgreSQL) | `QUEUE_CONNECTION=database` | Queue: `broadcasts,default`
+> - Tidak ada service Redis di `docker-compose.yml` — pakai database cache
 > - Optimizations deployed: **Rec-1** (skip LAN IP di curl fallback), **Rec-3** (sighting bypass queue)
+> - **Rec-Fix-Outbound** (Oktober 2026): `ShippingDocumentController` + `GateEngineService` diperbaiki — outbound kini validasi tag `attached`, GATE_OUT reset tag ke `active`+`last_warehouse_id=null`; FE `ShippingDocuments.jsx` diperbarui (empty-state outbound)
 > - Pending: **Rec-4** Redis — butuh tambah service redis ke `docker-compose.yml` dulu
-> - Reader fisik belum dinyalakan — belum ada live test end-to-end
+> - **Reader fisik aktif** — live test end-to-end sudah berjalan: reader 192.168.2.200:2022 → edge bridge → VPS sighting 200 OK ✅
+> - **Fix-Routes (Oktober 2026):** `GET /api/edge/events` dan `GET /api/enrollment/stream` ditambahkan ke `routes/api.php` — edge-bridge kini terhubung SSE tanpa 404
+> - **Fix-Models (Oktober 2026):** `Item`, `RfidTag`, `ShippingDocumentTag` — kolom `is_length_based`, `remaining_length_m`, `total_length_m`, `length_dispatched` ditambahkan ke `$fillable` + `$casts`
+> - **Fix-Partial (Oktober 2026):** `GateEngineService` + `CustodyService` + `ShippingDocumentController` — partial withdrawal drum kabel sekarang **fully implemented**: 7/7 test pass
+> - **Fix-ALLOW_HYBRID (30 Oct 2026):** VPS `.env` `ALLOW_HYBRID_DEVICE=true` ditambahkan — device `hybrid_workstation` kini tampil di FE enrollment device picker ✅
+> - **Fix-Heartbeat-Validation (30 Oct 2026):** `DeviceTelemetryController::heartbeat()` — `reader_status` allowlist ditambah `connected`+`paired`; `reader_last_response_at`/`reader_status_changed_at` diubah ke `nullable|string|max:50` untuk terima epoch-ms maupun ISO8601 ✅
+> - **VPS edge-bridge container** juga berjalan di VPS (ENABLE_DIRECT_READER=false, API_BASE_URL=http://nginx/api) — tidak punya reader fisik, hanya jaga SSE reverse channel ke VPS. Edge lokal PC gudang yang baca reader dan kirim sighting ke VPS.
+> - **WS_ALLOWED_ORIGINS VPS:** `http://206.237.98.48,...` — browser dari VPS URL bisa connect WS ke edge lokal `ws://192.168.9.254:2078/` ✅
 
 ---
 
@@ -1328,9 +1336,16 @@ Gate event masuk pertama kali:
   GateEngineService::recordGateCustody() → shippingDoc.status='in_progress'
 
 PM/SA: POST /api/shipping-documents/{id}/approve
-  → status='completed' LANGSUNG (tidak ada intermediate 'approved')
-  → digunakan untuk: (1) skip gate scan jika fisik sudah diperiksa manual,
-    atau (2) setelah gate scan untuk close dokumen
+  → Jika status='draft': ubah ke status='approved' (siap untuk scan gate)
+  → Jika status='in_progress' (sudah ada gate pass): ubah ke 'completed'
+     (validasi: semua tag harus sudah scanned + ada GatePassEvent valid)
+  → Tidak bisa approve dari status selain 'draft' atau 'in_progress'
+
+PIC/PM/SA: POST /api/shipping-documents/{id}/assign-tags
+  → Boleh dari draft/approved/in_progress
+  → Jika assign berhasil dan status masih draft/approved → otomatis ke 'in_progress'
+  → Inbound: tag harus status='active' + last_warehouse_id=null
+  → Outbound: tag harus status='attached' + last_warehouse_id=warehouse_id dokumen
 
 PIC: POST /api/shipping-documents/{id}/complete
   Validasi: semua tag assigned sudah punya bukti gate pass
@@ -1338,10 +1353,10 @@ PIC: POST /api/shipping-documents/{id}/complete
   CustodyLedger: DOCUMENT_COMPLETED
 
 PM/SA: POST /api/shipping-documents/{id}/cancel → status='cancelled'
+  (tidak bisa cancel jika sudah ada GatePassEvent is_valid=true)
 
-Note: Dokumen bisa di-assign-tags sejak status 'draft'.
-Status 'approved' (tanpa selesai) hanya bisa dicapai jika FE memanggil
-endpoint lain; endpoint /approve saat ini langsung mengubah ke 'completed'.
+Note: Status flow normal: draft → in_progress (saat assign-tags) → completed (saat approve dari in_progress).
+Status 'approved' (intermediate) hanya terjadi jika approve dipanggil dari draft sebelum ada gate pass.
 ```
 
 ### Progress Real-time di ShippingDocuments.jsx
@@ -1505,7 +1520,7 @@ pada turn yang sama. Lihat [`arsitektur.md`](arsitektur.md) untuk konteks sistem
 
 ## 25. Alur 5 — Partial Withdrawal (Drum Kabel / Length-Based Item)
 
-**Status: IMPLEMENTED** (Oktober 2026)
+**Status: IMPLEMENTED** (Oktober 2026 — 7/7 test pass, semua layer: GateEngine, Controller, Model, FE)
 
 ### Konsep
 
@@ -1889,7 +1904,7 @@ Schema lengkap tabel yang relevan dengan alur RFID — diambil langsung dari Pos
 Koneksi: `mosa-postgres` container, DB `mosa_wms`, user `mosa_user`.
 
 > **Data aktual (Oktober 2026):**
-> `rfid_tags` = 1 tag | `gate_pass_events` = 2.208 event | `custody_ledger` = 3 entri | `gate_devices` = 1 device | `shipping_documents` = 54 dokumen
+> `rfid_tags` = **2 tag** | `gate_pass_events` = **23.192 event** | `custody_ledger` = 3 entri | `gate_devices` = 1 device | `shipping_documents` = **56 dokumen** (update Oktober 2026)
 
 ---
 
@@ -1917,8 +1932,9 @@ Tag harus ada di sini sebelum bisa melewati gate atau di-enroll ke dokumen.
 Indexes: epc UNIQUE, (item_id,status), (status,last_warehouse_id)
 
 Contoh data aktual:
- id=1 | epc=E28069150000402D4160D5F2 | item_id=1 | status=attached
-      | last_warehouse_id=1 | last_read_at=2026-10-27 02:00:44
+ id=1 | epc=E28069150000402D4160D5F2 | item_id=1 | status=active | last_warehouse_id=null
+ id=2 | epc=E28069150000402D4160B9F2 | item_id=1 | status=active | last_warehouse_id=null
+ (Oktober 2026 — setelah siklus inbound+outbound selesai)
 ```
 
 ```sql
@@ -1997,7 +2013,7 @@ Tujuan: setiap GATE_EVENT dari edge tersimpan di sini. Berisi EPC + keputusan AL
 Indexes: (gate_device_id,event_id) UNIQUE, (mismatch_flag,created_at),
          shipping_document_id, (warehouse_id,id DESC)
 
-Data aktual: 2.208 event
+Data aktual: **23.192 event** (Oktober 2026)
 ```
 
 ```sql
@@ -2040,7 +2056,7 @@ Data aktual: 3 entri
 ### 28e. `shipping_documents` + `shipping_document_tags`
 
 ```
-shipping_documents — header dokumen pengiriman (54 dokumen aktual)
+shipping_documents — header dokumen pengiriman (**56 dokumen aktual**, Oktober 2026)
  document_number UNIQUE | nomor dokumen
  type                   | 'DO'|'SJ'|'BAST'|dll
  status                 | 'draft'|'approved'|'archived'
@@ -2387,14 +2403,14 @@ Sumber: `RfidTagController.php` + `GateEngineService.php` aktual VPS.
 
 | Status | Artinya | Boleh Gate? | Diset Oleh |
 |---|---|:---:|---|
-| `active` | Tag terdaftar, barang siap dikirim | ✅ | Enroll baru; gate INBOUND confirm; reactivate |
-| `attached` | Barang sudah gate IN — ada di lokasi penerima | ✅ | GateEngine setelah INBOUND |
+| `active` | Tag terdaftar / sudah keluar gudang, siap untuk inbound baru | ✅ | Enroll baru; GATE_OUT (barang keluar gudang); reactivate |
+| `attached` | Barang sudah GATE_IN — ada di dalam gudang, siap untuk outbound | ✅ | GateEngineService.recordGateCustody() saat direction=IN |
 | `reserved` | EPC di-reserve tapi belum ditempel fisik | ❌ | `POST /tags/reserve` |
 | `defective` | Tag rusak fisik | ❌ | `PATCH /tags/{epc}/status` → `defective` |
 | `lost` | Tag hilang | ❌ | `PATCH /tags/{epc}/status` → `lost` |
 | `decommissioned` | Dinonaktifkan permanen | ❌ | `DELETE /tags/{epc}` atau bulk-delete |
 
-> **GateEngine rule (kode baris 295):** status BUKAN `active` atau `attached` → `mismatch_flag=true`, `unlock_gate=false`.
+> **GateEngine rule (GateEngineService.php ~baris 295):** status BUKAN `active` atau `attached` → `mismatch_flag=true`. Untuk outbound juga verifikasi `status=attached`+`last_warehouse_id=wh dokumen` (~baris 320–326); inbound verifikasi `status=active`+`last_warehouse_id=null` (~baris 327–329).
 
 ---
 
@@ -2403,47 +2419,49 @@ Sumber: `RfidTagController.php` + `GateEngineService.php` aktual VPS.
 ```
   POST /tags/enroll
   POST /tags/{epc}/reactivate (SA only)
-         │
-         ▼
-     [ active ] ◄──── Gate INBOUND dikonfirmasi ────┐
-         │                                           │
-  Gate OUTBOUND dikonfirmasi (dokumen valid)         │
-         │                                           │
-         ▼                                           │
-     [ attached ] ──────────────────────────────────►┘
+         |
+         v
+     [ active ]  ---------> GATE_IN / direction=IN ----------->  [ attached ]
+         ^                  (barang masuk gudang)                      |
+         |                  rfid_tags.status = attached                |
+         |                  last_warehouse_id = warehouse_id           |
+         |                                                             |
+         <--------- GATE_OUT / direction=OUT (dokumen outbound) <------+
+                    (barang keluar gudang)
+                    rfid_tags.status = active
+                    last_warehouse_id = null
 
   [ active / attached ]
-       │ PATCH /status (SA, PM, PIC)
-       ├──► [ defective ]
-       └──► [ lost ]
-                │ DELETE /tags/{epc} atau bulk-delete (SA)
-                ▼
-         [ decommissioned ] ──► reactivate (SA) ──► [ active ]
+       | PATCH /status (SA, PM, PIC)
+       +---> [ defective ]
+       +---> [ lost ]
+                | DELETE /tags/{epc} atau bulk-delete (SA)
+                v
+         [ decommissioned ] ---> reactivate (SA) ---> [ active ]
 
-  [ reserved ] ──► enroll manual ulang ──► [ active ]
+  [ reserved ] ---> enroll manual ulang ---> [ active ]
 ```
-
----
 
 ### 31c. Status vs Gate Decision
 
 ```
 OUTBOUND (direction=OUT, dokumen outbound):
-  active  + last_warehouse_id = wh dokumen  →  ✅ ALLOW
-  attached+ last_warehouse_id = wh dokumen  →  ✅ ALLOW (partial drum kabel)
-  active  + last_warehouse_id ≠ wh dokumen  →  ❌ DENY (beda gudang)
-  status not in ['active','attached']        →  ❌ DENY
-  EPC tidak ada di rfid_tags                →  ❌ DENY
-  EPC tidak ada di shipping_document_tags   →  ❌ DENY (tag asing)
+  attached + last_warehouse_id = wh dokumen  →  ✅ ALLOW
+  active   + last_warehouse_id = wh dokumen  →  ❌ DENY (belum masuk gudang via gate)
+  status not in ['active','attached']         →  ❌ DENY (preliminary check)
+  EPC tidak ada di rfid_tags                 →  ❌ DENY
+  EPC tidak ada di shipping_document_tags    →  ❌ DENY (tidak di-assign ke dokumen)
 
 INBOUND (direction=IN, dokumen inbound):
   active + last_warehouse_id = null          →  ✅ ALLOW (stok baru)
   active + last_warehouse_id ≠ null          →  ❌ DENY (sudah di gudang lain)
   EPC tidak ada di rfid_tags                →  ❌ DENY
 
-Setelah ALLOW:
-  OUTBOUND → rfid_tags.status='attached', last_warehouse_id = wh tujuan
-  INBOUND  → rfid_tags.status='active',   last_warehouse_id = wh penerima
+Setelah ALLOW (GateEngineService::recordGateCustody):
+  direction=IN  (INBOUND)  → rfid_tags.status='attached', last_warehouse_id = warehouse_id
+  direction=OUT (OUTBOUND) → rfid_tags.status='active',   last_warehouse_id = null
+
+  Siklus penuh: enroll→active(wh=null) → GATE_IN→attached(wh=1) → GATE_OUT→active(wh=null)
 ```
 
 ---
@@ -2453,7 +2471,7 @@ Setelah ALLOW:
 1. **Enroll** selalu `status='active'` — tidak ada status lain saat enroll pertama.
 2. **`reserved`** ≠ enroll aktif — tidak boleh melewati gate. Harus enroll ulang.
 3. **`decommissioned`** bersifat terminal — hanya SA yang bisa reactivate.
-4. **`attached`** tidak memblokir gate OUTBOUND** jika ada dokumen valid (misal: partial drum kabel atau pengembalian barang).
+4. **`attached`** adalah **syarat utama** tag untuk outbound** — tag yang sudah GATE_IN berstatus `attached`. Tag `active` (belum masuk gudang) justru **ditolak** untuk outbound. Siklus: enroll→active → GATE_IN→attached → GATE_OUT→active.
 5. **Tidak ada auto-transisi** `lost` → `active`. Harus decommission → reactivate (SA).
 6. **`shipping_document_tags.status`** (`expected/scanned/missing/extra`) adalah status tag **dalam konteks 1 dokumen** — terpisah dari `rfid_tags.status` global.
 

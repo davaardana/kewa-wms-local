@@ -130,6 +130,9 @@ class ApiClient {
       const response = await axios.post(`${this.baseUrl}/devices/heartbeat`, payload, this.mutationConfig(3000));
       return response.data;
     } catch (error) {
+      if (error.response?.status === 422) {
+        console.warn('⚠️ [HEARTBEAT] 422 validation error:', JSON.stringify(error.response.data));
+      }
       return null;
     }
   }

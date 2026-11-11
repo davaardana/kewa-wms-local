@@ -279,9 +279,7 @@ class ShippingDocumentController extends Controller
     }
 
     /**
-     * Approve document in_progress (PM or Superadmin).
-     * Hanya bisa dari status 'in_progress' — artinya minimal 1 tag sudah di-assign
-     * dan dokumen sudah bergerak dari draft setelah tag di-assign.
+     * Approve a draft document (PM or Superadmin).
      */
     public function approve(Request $request, int $id): JsonResponse
     {
@@ -292,19 +290,178 @@ class ShippingDocumentController extends Controller
 
         $doc = ShippingDocument::findOrFail($id);
 
-        if (!in_array($doc->status, ['in_progress'], true)) {
-            return response()->json(['message' => 'Dokumen hanya bisa di-approve dari status in_progress. Pastikan tag sudah di-assign dan barang sudah melewati gate.'], 422);
+        if (!in_array($doc->status, ['draft', 'in_progress'])) {
+            return response()->json(['message' => 'Dokumen hanya bisa di-approve dari status draft atau in_progress.'], 422);
         }
 
+        // Jika dokumen sudah in_progress (tag sudah lewat gate), approve = selesaikan langsung
+        if ($doc->status === 'in_progress') {
+            $totalTags   = $doc->tags()->count();
+            $scannedTags = $doc->tags()->where('status', 'scanned')->count();
+            if ($totalTags === 0 || $scannedTags !== $totalTags) {
+                return response()->json(['message' => 'Tidak bisa approve: semua tag harus sudah terbaca gate sebelum approve.'], 422);
+            }
+
+            $expectedDirection = $doc->type === 'inbound' ? 'IN' : 'OUT';
+            $latestValidPass = \App\Models\GatePassEvent::where('shipping_document_id', $doc->id)
+                ->where('warehouse_id', $doc->warehouse_id)
+                ->where('direction', $expectedDirection)
+                ->where('is_valid', true)
+                ->latest('id')
+                ->first();
+            if (!$latestValidPass) {
+                return response()->json(['message' => 'Tidak bisa approve: belum ada bukti lintasan gate yang valid.'], 422);
+            }
+
+            $doc->update([
+                'status'              => 'completed',
+                'approved_by_user_id' => $user->id,
+                'approved_at'         => now(),
+            ]);
+
+            return response()->json([
+                'message'  => 'Dokumen disetujui dan diselesaikan.',
+                'document' => $doc->fresh(['creator:id,name', 'approver:id,name', 'warehouse:id,name,code']),
+            ]);
+        }
+
+        // Status draft → approve biasa, set ke approved
         $doc->update([
-            'status' => 'completed',
+            'status'              => 'approved',
             'approved_by_user_id' => $user->id,
-            'approved_at' => now(),
+            'approved_at'         => now(),
         ]);
 
         return response()->json([
             'message' => 'Dokumen berhasil di-approve.',
             'document' => $doc->fresh(['creator:id,name', 'approver:id,name', 'warehouse:id,name,code']),
+        ]);
+    }
+
+    /**
+     * Auto-assign RFID tags by quantity per document item.
+     * FE hanya kirim {document_item_id, qty} — backend pilih tag FIFO (oldest id first).
+     */
+    public function autoAssign(Request $request, int $id): JsonResponse
+    {
+        $user = $request->user();
+        if (!in_array($user->role, ['pic_lapangan', 'pm', 'superadmin'])) {
+            return response()->json(['message' => 'Tidak memiliki akses untuk assign tag.'], 403);
+        }
+
+        $doc = ShippingDocument::findOrFail($id);
+        if (!in_array($doc->status, ['draft', 'approved', 'in_progress'])) {
+            return response()->json(['message' => 'Dokumen harus dalam status draft, approved, atau in_progress untuk assign tag.'], 422);
+        }
+
+        $validated = $request->validate([
+            'items'                    => ['required', 'array', 'min:1'],
+            'items.*.document_item_id' => ['required', 'exists:shipping_document_items,id'],
+            'items.*.qty'              => ['required', 'integer', 'min:1'],
+        ]);
+
+        $assigned = [];
+        $errors   = [];
+
+        DB::transaction(function () use ($validated, &$doc, &$assigned, &$errors) {
+            $doc = ShippingDocument::whereKey($doc->id)->lockForUpdate()->firstOrFail();
+            if (!in_array($doc->status, ['draft', 'approved', 'in_progress'], true)) {
+                throw new \Symfony\Component\HttpKernel\Exception\HttpException(422, 'Dokumen tidak lagi terbuka untuk assignment tag.');
+            }
+
+            $itemIds = collect($validated['items'])->pluck('document_item_id')->all();
+
+            $docItems = ShippingDocumentItem::whereIn('id', $itemIds)
+                ->where('shipping_document_id', $doc->id)
+                ->get()->keyBy('id');
+
+            $assignedCountPerItem = ShippingDocumentTag::whereIn('shipping_document_item_id', $itemIds)
+                ->selectRaw('shipping_document_item_id, COUNT(*) as cnt')
+                ->groupBy('shipping_document_item_id')
+                ->pluck('cnt', 'shipping_document_item_id');
+
+            $alreadyAssignedEpcs = ShippingDocumentTag::where('shipping_document_id', $doc->id)
+                ->pluck('tag_epc')->all();
+
+            $busyTagIds = ShippingDocumentTag::where('shipping_document_id', '!=', $doc->id)
+                ->whereHas('shippingDocument', fn ($q) => $q->whereIn('status', ['approved', 'in_progress']))
+                ->pluck('rfid_tag_id')->all();
+
+            $toCreate = [];
+
+            foreach ($validated['items'] as $itemData) {
+                $itemId  = $itemData['document_item_id'];
+                $wantQty = (int) $itemData['qty'];
+
+                $docItem = $docItems->get($itemId);
+                if (!$docItem) {
+                    $errors[] = "Document item ID {$itemId} tidak valid.";
+                    continue;
+                }
+
+                $alreadyAssigned = (int) ($assignedCountPerItem->get($itemId, 0));
+                $remaining       = (int) $docItem->expected_qty - $alreadyAssigned;
+
+                if ($remaining <= 0) {
+                    $errors[] = "Item sudah penuh ({$alreadyAssigned}/{$docItem->expected_qty} tag).";
+                    continue;
+                }
+
+                $toAssign = min($wantQty, $remaining);
+                if ($toAssign < $wantQty) {
+                    $errors[] = "Hanya {$remaining} slot tersisa, assign {$toAssign} dari {$wantQty}.";
+                }
+
+                $candidateQuery = RfidTag::where('item_id', $docItem->item_id)
+                    ->whereNotIn('epc', $alreadyAssignedEpcs)
+                    ->whereNotIn('id', $busyTagIds)
+                    ->orderBy('id')
+                    ->lockForUpdate();
+
+                if ($doc->type === 'inbound') {
+                    // Inbound: tag baru dari vendor, belum ada gudang, status active
+                    $candidateQuery->where('status', 'active')->whereNull('last_warehouse_id');
+                } else {
+                    // Outbound: tag sudah masuk gudang via gate, status attached
+                    $candidateQuery->where('status', 'attached')->where('last_warehouse_id', $doc->warehouse_id);
+                }
+
+                $pickedTags = $candidateQuery->take($toAssign)->get();
+
+                if ($pickedTags->isEmpty()) {
+                    $errors[] = "Tidak ada tag tersedia untuk item ini di gudang.";
+                    continue;
+                }
+                if ($pickedTags->count() < $toAssign) {
+                    $errors[] = "Hanya {$pickedTags->count()} tag tersedia (diminta {$toAssign}).";
+                }
+
+                foreach ($pickedTags as $rfidTag) {
+                    $toCreate[]           = [
+                        'shipping_document_id'      => $doc->id,
+                        'shipping_document_item_id' => $docItem->id,
+                        'rfid_tag_id'               => $rfidTag->id,
+                        'tag_epc'                   => $rfidTag->epc,
+                        'status'                    => 'expected',
+                    ];
+                    $assigned[]            = $rfidTag->epc;
+                    $alreadyAssignedEpcs[] = $rfidTag->epc;
+                }
+            }
+
+            if (!empty($toCreate)) {
+                ShippingDocumentTag::insert($toCreate);
+            }
+
+            if (in_array($doc->status, ['draft', 'approved']) && count($assigned) > 0) {
+                $doc->update(['status' => 'in_progress']);
+            }
+        });
+
+        return response()->json([
+            'message'  => count($assigned) . ' tag berhasil di-assign secara otomatis.',
+            'assigned' => $assigned,
+            'errors'   => $errors,
         ]);
     }
 
@@ -322,7 +479,7 @@ class ShippingDocumentController extends Controller
 
         $doc = ShippingDocument::findOrFail($id);
         if (!in_array($doc->status, ['draft', 'approved', 'in_progress'])) {
-            return response()->json(['message' => 'Dokumen tidak dapat di-assign tag pada status ini.'], 422);
+            return response()->json(['message' => 'Dokumen harus dalam status draft, approved, atau in_progress untuk assign tag.'], 422);
         }
 
         $request->merge([
@@ -332,10 +489,10 @@ class ShippingDocumentController extends Controller
                 ->all(),
         ]);
         $validated = $request->validate([
-            'tags'                          => ['required', 'array', 'min:1'],
-            'tags.*.epc'                    => ['required', 'string', 'min:8', 'max:64', 'distinct', 'regex:/^[0-9A-Fa-f]+$/'],
-            'tags.*.document_item_id'       => ['required', 'exists:shipping_document_items,id'],
-            'tags.*.length_dispatched'      => ['sometimes', 'nullable', 'numeric', 'min:0.001'],
+            'tags'                       => ['required', 'array', 'min:1'],
+            'tags.*.epc'                 => ['required', 'string', 'min:8', 'max:64', 'distinct', 'regex:/^[0-9A-Fa-f]+$/'],
+            'tags.*.document_item_id'    => ['required', 'exists:shipping_document_items,id'],
+            'tags.*.length_dispatched'   => ['nullable', 'numeric', 'min:0.001'],
         ]);
 
         $assigned = [];
@@ -350,7 +507,7 @@ class ShippingDocumentController extends Controller
             $incomingEpcs    = collect($validated['tags'])->pluck('epc')->all();
             $incomingItemIds = collect($validated['tags'])->pluck('document_item_id')->unique()->all();
 
-            // ΓöÇΓöÇ Batch #1: semua RfidTag sekaligus (lock untuk cegah race) ΓöÇΓöÇ
+            // ── Batch #1: semua RfidTag sekaligus (lock untuk cegah race) ──
             $rfidTagsByEpc = RfidTag::whereIn('epc', $incomingEpcs)
                 ->lockForUpdate()
                 ->get()
@@ -358,20 +515,20 @@ class ShippingDocumentController extends Controller
 
             $allRfidTagIds = $rfidTagsByEpc->pluck('id')->all();
 
-            // ΓöÇΓöÇ Batch #2: tag yang sudah ada di dokumen ini ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+            // ── Batch #2: tag yang sudah ada di dokumen ini ──────────────
             $alreadyInDoc = ShippingDocumentTag::where('shipping_document_id', $doc->id)
                 ->whereIn('rfid_tag_id', $allRfidTagIds)
                 ->pluck('rfid_tag_id')
                 ->flip();
 
-            // ΓöÇΓöÇ Batch #3: tag aktif di dokumen LAIN ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+            // ── Batch #3: tag aktif di dokumen LAIN ─────────────────────
             $activeInOtherDoc = ShippingDocumentTag::whereIn('rfid_tag_id', $allRfidTagIds)
                 ->where('shipping_document_id', '!=', $doc->id)
                 ->whereHas('shippingDocument', fn ($q) => $q->whereIn('status', ['approved', 'in_progress']))
                 ->pluck('rfid_tag_id')
                 ->flip();
 
-            // ΓöÇΓöÇ Batch #4: doc items + jumlah tag yang sudah di-assign ΓöÇΓöÇΓöÇΓöÇ
+            // ── Batch #4: doc items + jumlah tag yang sudah di-assign ────
             $docItems = ShippingDocumentItem::whereIn('id', $incomingItemIds)
                 ->where('shipping_document_id', $doc->id)
                 ->get()
@@ -382,7 +539,7 @@ class ShippingDocumentController extends Controller
                 ->groupBy('shipping_document_item_id')
                 ->pluck('cnt', 'shipping_document_item_id');
 
-            // ΓöÇΓöÇ In-memory validation loop ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+            // ── In-memory validation loop ────────────────────────────────
             $toCreate = [];
             foreach ($validated['tags'] as $tagData) {
                 $epc    = $tagData['epc'];
@@ -412,44 +569,31 @@ class ShippingDocumentController extends Controller
                     continue;
                 }
 
-                // Tag tersedia untuk di-assign ke dokumen jika:
-                //   OUTBOUND: status 'attached' DAN ada di warehouse dokumen ini
-                //             ATAU is_length_based=true DAN remaining_length_m > 0 (partial drum)
-                //   INBOUND:  status 'active' DAN belum ada di warehouse manapun (baru dari vendor)
-                $tagInThisWarehouse  = (int) $rfidTag->last_warehouse_id === (int) $doc->warehouse_id;
-                $isPartialDrum       = $rfidTag->item?->is_length_based
-                    && $rfidTag->remaining_length_m !== null
-                    && (float) $rfidTag->remaining_length_m > 0.0
-                    && $tagInThisWarehouse;
-                $availableForDocument = $doc->type === 'outbound'
-                    ? (($rfidTag->status === 'attached' && $tagInThisWarehouse) || $isPartialDrum)
-                    : ($rfidTag->status === 'active' && $rfidTag->last_warehouse_id === null);
-
-                // Validasi length_dispatched untuk partial drum OUTBOUND
-                $lengthDispatched = isset($tagData['length_dispatched'])
-                    ? (float) $tagData['length_dispatched']
-                    : null;
-                if ($doc->type === 'outbound' && $isPartialDrum && $availableForDocument) {
-                    if ($lengthDispatched === null) {
-                        $errors[] = "Tag EPC {$epc} adalah drum kabel. Wajib isi length_dispatched (meter yang akan diambil).";
-                        continue;
-                    }
-                    if ($lengthDispatched > (float) $rfidTag->remaining_length_m) {
-                        $errors[] = "Tag EPC {$epc}: length_dispatched ({$lengthDispatched}m) melebihi sisa drum ({$rfidTag->remaining_length_m}m).";
-                        continue;
-                    }
+                // Inbound: status 'active' + belum punya gudang (tag baru dari vendor)
+                // Outbound: status 'attached' + last_warehouse_id = gudang dokumen (masuk via gate)
+                if ($doc->type === 'inbound') {
+                    $availableForDocument = $rfidTag->status === 'active'
+                        && $rfidTag->last_warehouse_id === null;
+                } else {
+                    $availableForDocument = $rfidTag->status === 'attached'
+                        && (int) $rfidTag->last_warehouse_id === (int) $doc->warehouse_id;
                 }
                 if (!$availableForDocument) {
-                    // Cek apakah tag sudah tercatat sebagai stok di gudang ini
-                    // (attached/active di warehouse yang sama untuk dokumen inbound)
-                    $isAlreadyStock = $doc->type === 'inbound'
-                        && ($rfidTag->status === 'attached' || $rfidTag->status === 'active')
-                        && $tagInThisWarehouse;
-                    $errors[] = $isAlreadyStock
-                        ? "Tag EPC {$epc} sudah tercatat sebagai stok di gudang ini. Gunakan dokumen Barang Keluar; mengarsipkan dokumen lama tidak mengubah lokasi stok."
-                        : ($doc->type === 'inbound'
-                            ? "Tag EPC {$epc} bukan tag baru yang tersedia untuk penerimaan."
-                            : "Tag EPC {$epc} tidak aktif sebagai stok di gudang dokumen.");
+                    if ($doc->type === 'inbound') {
+                        $isAlreadyStock = $rfidTag->status === 'active'
+                            && (int) $rfidTag->last_warehouse_id === (int) $doc->warehouse_id;
+                        $errors[] = $isAlreadyStock
+                            ? "Tag EPC {$epc} sudah tercatat sebagai stok di gudang ini. Gunakan dokumen Barang Keluar."
+                            : ($rfidTag->status === 'attached'
+                                ? "Tag EPC {$epc} sudah berada di gudang. Tidak bisa dipakai untuk inbound."
+                                : "Tag EPC {$epc} bukan tag baru yang tersedia untuk penerimaan.");
+                    } else {
+                        $errors[] = $rfidTag->status === 'active'
+                            ? "Tag EPC {$epc} belum masuk ke gudang (belum diterima). Lakukan inbound terlebih dahulu."
+                            : ($rfidTag->status === 'attached' && (int) $rfidTag->last_warehouse_id !== (int) $doc->warehouse_id
+                                ? "Tag EPC {$epc} berada di gudang lain, bukan gudang dokumen ini."
+                                : "Tag EPC {$epc} tidak tersedia sebagai stok di gudang dokumen ini.");
+                    }
                     continue;
                 }
 
@@ -461,23 +605,38 @@ class ShippingDocumentController extends Controller
                     continue;
                 }
 
+                // Validasi length_dispatched untuk item berbasis panjang (drum kabel, dll.)
+                $lengthDispatched = isset($tagData['length_dispatched'])
+                    ? (float) $tagData['length_dispatched'] : null;
+                if ($rfidTag->item?->is_length_based ?? false) {
+                    if ($lengthDispatched === null || $lengthDispatched <= 0) {
+                        $errors[] = "Tag EPC {$epc}: length_dispatched wajib diisi untuk item berbasis panjang (drum/kabel).";
+                        continue;
+                    }
+                    $remaining = (float) ($rfidTag->remaining_length_m ?? 0);
+                    if ($lengthDispatched > $remaining) {
+                        $errors[] = "Tag EPC {$epc}: length_dispatched ({$lengthDispatched}m) melebihi sisa drum ({$remaining}m).";
+                        continue;
+                    }
+                }
+
                 $toCreate[] = [
                     'shipping_document_id'      => $doc->id,
                     'shipping_document_item_id' => $docItem->id,
                     'rfid_tag_id'               => $rfidTag->id,
                     'tag_epc'                   => $rfidTag->epc,
                     'status'                    => 'expected',
-                    'length_dispatched'         => $lengthDispatched ?? null,
+                    'length_dispatched'         => $lengthDispatched,
                 ];
                 $assigned[] = $rfidTag->epc;
             }
 
-            // ΓöÇΓöÇ Bulk insert semua yang lolos validasi ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+            // ── Bulk insert semua yang lolos validasi ────────────────────
             if (!empty($toCreate)) {
                 ShippingDocumentTag::insert($toCreate);
             }
 
-            if (in_array($doc->status, ['draft', 'approved'], true) && count($assigned) > 0) {
+            if (in_array($doc->status, ['draft', 'approved']) && count($assigned) > 0) {
                 $doc->update(['status' => 'in_progress']);
             }
         });
@@ -491,13 +650,7 @@ class ShippingDocumentController extends Controller
 
     /**
      * Record a tag scan from the gate (called by edge-bridge or system).
-     *
-     * Scan manual dinonaktifkan by design: satu-satunya sumber kebenaran progress
-     * dokumen adalah event gate fisik yang diproses GateEngineService. Ini menjaga
-     * audit trail tidak bisa dimanipulasi dari UI tanpa bukti lintasan reader nyata.
-     *
-     * Caller sebaiknya memantau progress lewat GET /shipping-documents/{id} atau
-     * SSE /gate/stream, bukan endpoint ini.
+     * Matches scanned EPC against active documents.
      */
     public function scanTag(Request $request, int $id): JsonResponse
     {
@@ -518,17 +671,14 @@ class ShippingDocumentController extends Controller
         }
 
         return response()->json([
-            'message'       => 'Scan manual tidak diizinkan. Progress dokumen hanya berubah dari event gate fisik yang disetujui. Pantau perkembangan lewat halaman dokumen ΓÇö data diperbarui otomatis saat tag melintas gate.',
-            'matched'       => false,
-            'epc'           => $validated['epc'],
-            'locked_reason' => 'gate_only',
+            'message' => 'Progress dokumen hanya berubah dari event gate yang disetujui; scan manual tidak diizinkan.',
+            'matched' => false,
+            'epc' => $validated['epc'],
         ], 422);
     }
 
     /**
      * Batch scan multiple tags at once (from gate event).
-     *
-     * Dinonaktifkan by design ΓÇö lihat komentar scanTag().
      */
     public function batchScanTags(Request $request, int $id): JsonResponse
     {
@@ -555,10 +705,9 @@ class ShippingDocumentController extends Controller
         }
 
         return response()->json([
-            'message'       => 'Batch scan manual tidak diizinkan. Progress dokumen hanya berubah dari event gate fisik yang disetujui. Pantau perkembangan lewat halaman dokumen ΓÇö data diperbarui otomatis saat tag melintas gate.',
-            'matched'       => [],
-            'unmatched'     => $validated['epcs'],
-            'locked_reason' => 'gate_only',
+            'message' => 'Progress dokumen hanya berubah dari event gate yang disetujui; scan manual tidak diizinkan.',
+            'matched' => [],
+            'unmatched' => $validated['epcs'],
         ], 422);
     }
 
@@ -583,7 +732,12 @@ class ShippingDocumentController extends Controller
             if ($items->isEmpty()) {
                 throw new \Symfony\Component\HttpKernel\Exception\HttpException(422, 'Dokumen tidak memiliki item.');
             }
-            // v2: tag di-assign otomatis oleh gate ΓÇö skip cek pre-assignment manual
+            foreach ($items as $item) {
+                $assignedQty = ShippingDocumentTag::where('shipping_document_item_id', $item->id)->count();
+                if ($assignedQty !== (int) $item->expected_qty) {
+                    throw new \Symfony\Component\HttpKernel\Exception\HttpException(422, "Assignment item {$item->item_id} belum lengkap ({$assignedQty}/{$item->expected_qty} tag).");
+                }
+            }
 
             $totalTags = $doc->tags()->count();
             $scannedTags = $doc->tags()->where('status', 'scanned')->count();
@@ -610,14 +764,8 @@ class ShippingDocumentController extends Controller
                 ->sort()
                 ->values()
                 ->all();
-            // Set-comparison: gate evidence harus mencakup semua assigned EPC (subset check).
-            // Strict equality ditolak karena gate bisa membaca EPC ekstra (antena noise),
-            // sedangkan yang penting semua EPC assignment ada dalam bukti gate.
-            $missingFromGate = array_values(array_diff($assignedEpcs, $verifiedEpcs));
-            if (!$latestValidPass || !empty($missingFromGate)) {
-                $missingStr = implode(', ', array_slice($missingFromGate, 0, 5));
-                $suffix = count($missingFromGate) > 5 ? ' ΓÇªdan ' . (count($missingFromGate) - 5) . ' lainnya' : '';
-                throw new \Symfony\Component\HttpKernel\Exception\HttpException(422, 'Tidak bisa menyelesaikan dokumen: belum ada bukti gate valid untuk seluruh EPC assignment pada arah dan gudang yang sesuai.' . ($missingStr ? " EPC belum tercakup: {$missingStr}{$suffix}." : ''));
+            if (!$latestValidPass || $verifiedEpcs !== $assignedEpcs) {
+                throw new \Symfony\Component\HttpKernel\Exception\HttpException(422, 'Tidak bisa menyelesaikan dokumen: belum ada bukti gate valid untuk seluruh EPC assignment pada arah dan gudang yang sesuai.');
             }
 
             if ($doc->type === 'inbound') {
@@ -636,42 +784,18 @@ class ShippingDocumentController extends Controller
                             refType: ShippingDocument::class,
                             refId: $doc->id,
                             warehouseId: (int) $doc->warehouse_id,
-                            notes: "Penerimaan diselesaikan ΓÇö Dokumen #{$doc->document_number}"
+                            notes: "Penerimaan diselesaikan — Dokumen #{$doc->document_number}"
                         );
                     }
                 }
             }
-
-            if ($doc->type === 'outbound') {
-                foreach ($doc->tags()->with('rfidTag')->get() as $documentTag) {
-                    $alreadyPosted = CustodyLedger::where('action', 'STOCK_OUT')
-                        ->where('ref_type', ShippingDocument::class)
-                        ->where('ref_id', $doc->id)
-                        ->where('tag_epc', $documentTag->tag_epc)
-                        ->exists();
-                    if (!$alreadyPosted) {
-                        app(CustodyService::class)->recordEvent(
-                            itemId: (int) $documentTag->rfidTag->item_id,
-                            holderUserId: (int) $user->id,
-                            action: 'STOCK_OUT',
-                            tagEpc: $documentTag->tag_epc,
-                            refType: ShippingDocument::class,
-                            refId: $doc->id,
-                            warehouseId: (int) $doc->warehouse_id,
-                            notes: "Pengiriman diselesaikan -- Dokumen #{$doc->document_number}"
-                        );
-                    }
-                }
-            }
-
-
 
             $doc->update(['status' => 'completed']);
             return $doc;
         });
 
         return response()->json([
-            'message' => 'Dokumen berhasil di-approve. Semua tag cocok Γ£ô',
+            'message' => 'Dokumen berhasil diselesaikan. Semua tag cocok ✓',
             'document' => $doc->fresh(['creator:id,name', 'approver:id,name', 'warehouse:id,name,code']),
         ]);
     }
@@ -736,7 +860,7 @@ class ShippingDocumentController extends Controller
                     refType: ShippingDocument::class,
                     refId: $doc->id,
                     warehouseId: (int) $doc->warehouse_id,
-                    notes: 'Legacy STOCK_IN ['.$preview['reconciliation_mode'].'] ΓÇö Fisik dikonfirmasi oleh user #'.$actorId.' ΓÇö Ref: '.$validated['evidence_reference'].' ΓÇö Dokumen #'.$doc->document_number
+                    notes: 'Legacy STOCK_IN ['.$preview['reconciliation_mode'].'] — Fisik dikonfirmasi oleh user #'.$actorId.' — Ref: '.$validated['evidence_reference'].' — Dokumen #'.$doc->document_number
                 );
                 $reconciled[] = $documentTag->tag_epc;
             }
@@ -849,6 +973,59 @@ class ShippingDocumentController extends Controller
     {
         return ($tag->status === 'attached' && (int) $tag->last_warehouse_id === $warehouseId)
             || ($tag->status === 'active' && $tag->last_warehouse_id === null);
+    }
+
+    /**
+     * Reset all tag scans to "expected" so the shipment can pass the gate again from zero.
+     * Use case: partial gate scan (e.g. only 25 of 50 tags passed) — reset and retry.
+     * Document stays in_progress; assigned tags are kept; only scan state is cleared.
+     * PM or Superadmin only.
+     */
+    public function resetTags(Request $request, int $id): JsonResponse
+    {
+        $user = $request->user();
+        if (!in_array($user->role, ['pm', 'superadmin'])) {
+            return response()->json(['message' => 'Hanya PM atau Superadmin yang bisa mereset scan tag.'], 403);
+        }
+
+        $doc = DB::transaction(function () use ($id, $user) {
+            $doc = ShippingDocument::whereKey($id)->lockForUpdate()->firstOrFail();
+
+            if ($doc->status !== 'in_progress') {
+                throw new \Symfony\Component\HttpKernel\Exception\HttpException(422, 'Reset scan hanya bisa dilakukan pada dokumen berstatus in_progress.');
+            }
+
+            $before = $this->documentAuditSnapshot($doc);
+
+            // Reset semua tag scan: kembalikan ke expected, hapus waktu scan
+            $resetCount = ShippingDocumentTag::where('shipping_document_id', $doc->id)
+                ->update(['status' => 'expected', 'scanned_at' => null]);
+
+            // Hapus GatePassEvent yang belum valid (partial/gagal) untuk dokumen ini
+            // GatePassEvent yang is_valid=true TIDAK dihapus — tetap sebagai bukti audit
+            GatePassEvent::where('shipping_document_id', $doc->id)
+                ->where('is_valid', false)
+                ->delete();
+
+            ShippingDocumentAudit::create([
+                'shipping_document_id' => $doc->id,
+                'actor_user_id'        => $user->id,
+                'action'               => 'RESET_TAGS',
+                'before_json'          => $before,
+                'after_json'           => array_merge($this->documentAuditSnapshot($doc->fresh()), [
+                    'reset_count' => $resetCount,
+                    'reason'      => 'Reset scan — barang akan melewati gate ulang dari awal.',
+                ]),
+                'created_at'           => now(),
+            ]);
+
+            return $doc;
+        });
+
+        return response()->json([
+            'message'  => 'Scan tag berhasil direset. Semua tag dikembalikan ke status expected. Lewatkan barang melalui gate kembali.',
+            'document' => $doc->fresh(),
+        ]);
     }
 
     /**

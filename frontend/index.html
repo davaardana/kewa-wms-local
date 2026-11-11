@@ -37,6 +37,49 @@
     <link rel="icon" type="image/png" sizes="192x192" href="/192x192.png" />
     <link rel="icon" type="image/png" sizes="512x512" href="/logo512.png" />
     <link rel="mask-icon" href="/192x192.png" color="#090d16" />
+
+    <!-- SW cache-bust: unregister stale SW then reload once per version -->
+    <script>
+      (function () {
+        var EXPECTED_SW_VER = 'v2.2';
+        var KEY = 'mosa_sw_ver';
+        if (sessionStorage.getItem(KEY) !== EXPECTED_SW_VER && 'serviceWorker' in navigator) {
+          navigator.serviceWorker.getRegistrations().then(function (regs) {
+            return Promise.all(regs.map(function (r) { return r.unregister(); }));
+          }).then(function () {
+            return 'caches' in window ? caches.keys().then(function (keys) {
+              return Promise.all(keys.map(function (k) { return caches.delete(k); }));
+            }) : null;
+          }).then(function () {
+            sessionStorage.setItem(KEY, EXPECTED_SW_VER);
+            window.location.reload(true);
+          });
+        }
+      })();
+    </script>
+
+    <!-- Global JS error: show message instead of blank white screen -->
+    <script>
+      window.addEventListener('error', function (e) {
+        var root = document.getElementById('root');
+        if (root && !root.hasChildNodes()) {
+          root.innerHTML = '<div style="font-family:sans-serif;padding:32px;text-align:center;color:#1e293b">'
+            + '<h2 style="color:#dc2626;margin-bottom:8px">&#9888;&#65039; Gagal Memuat Aplikasi</h2>'
+            + '<p style="color:#64748b;font-size:13px;margin-bottom:4px">' + (e.message || 'JavaScript error') + '</p>'
+            + '<p style="color:#94a3b8;font-size:11px;margin-bottom:16px">' + (e.filename || '') + ' baris ' + (e.lineno || '') + '</p>'
+            + '<button onclick="caches.keys().then(k=>Promise.all(k.map(c=>caches.delete(c)))).then(()=>location.reload(true))" '
+            + 'style="background:#2563eb;color:white;border:none;padding:10px 20px;border-radius:8px;cursor:pointer;font-size:13px">'
+            + '&#128260; Bersihkan Cache &amp; Muat Ulang</button></div>';
+        }
+      });
+      window.addEventListener('unhandledrejection', function (e) {
+        var msg = e.reason && (e.reason.message || String(e.reason));
+        if (msg && (msg.includes('Loading chunk') || msg.includes('Failed to fetch dynamically imported'))) {
+          caches.keys().then(function(k){return Promise.all(k.map(function(c){return caches.delete(c);}));})
+            .then(function(){ location.reload(true); });
+        }
+      });
+    </script>
   </head>
   <body class="bg-slate-50 text-slate-900 antialiased min-h-screen">
     <div id="root"></div>

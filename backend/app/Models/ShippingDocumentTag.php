@@ -19,7 +19,7 @@ class ShippingDocumentTag extends Model
 
     protected $casts = [
         'scanned_at'        => 'datetime',
-        'length_dispatched' => 'decimal:3',
+        'length_dispatched' => 'float',
     ];
 
     // --- Relationships ---

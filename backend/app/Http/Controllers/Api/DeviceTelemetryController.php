@@ -251,9 +251,11 @@ class DeviceTelemetryController extends Controller
             'ip_address' => 'nullable|string|max:50',
             'tcp_port' => 'nullable|integer',
             'metrics' => 'nullable|array',
-            'metrics.reader_status' => 'nullable|string|in:connecting,responsive,unresponsive,disconnected,disabled,unknown,unpaired',
-            'metrics.reader_last_response_at' => 'nullable|date',
-            'metrics.reader_status_changed_at' => 'nullable|date',
+            // Allowlist lengkap — termasuk 'connected' (legacy edge <v2) dan 'paired' (future)
+            'metrics.reader_status' => 'nullable|string|in:connecting,connected,responsive,unresponsive,disconnected,disabled,unknown,unpaired,paired',
+            // Terima ISO string ATAU epoch-ms string dari berbagai versi edge-bridge
+            'metrics.reader_last_response_at' => 'nullable|string|max:50',
+            'metrics.reader_status_changed_at' => 'nullable|string|max:50',
             'metrics.reader_error' => 'nullable|string|max:500',
         ]);
 
